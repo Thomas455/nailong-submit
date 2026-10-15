@@ -1,0 +1,25 @@
+# 站点是纯静态的，public/ 就是发布目录，不需要构建产物
+
+# 依赖（如果有人装了 wrangler 到本地）
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# wrangler 本地状态（含 .dev.vars 之类的本地密钥，绝对不能提交）
+.wrangler/
+.dev.vars
+
+# Python（tools 里可能有脚本）
+__pycache__/
+*.pyc
+
+# 编辑器
+.idea/
+.vscode/
+*.iml
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini

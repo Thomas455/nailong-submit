@@ -1,0 +1,42 @@
+{
+  // ==========================================================================
+  // 投稿站 · Cloudflare Workers 配置
+  //
+  // 部署在 submit.宇宙奶龙大学.com（独立子域名，和主站分开）
+  //
+  // ⚠️ Worker 的 name 必须和主站那个不同，否则会互相覆盖部署。
+  // ==========================================================================
+  "name": "nailong-submit",
+  "compatibility_date": "2026-10-14",
+
+  // 静态资源：public/ 目录直接发；src/worker.js 处理 /api/*
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "404-page"
+  },
+
+  // Worker 入口。有它的时候请求先走 Worker，
+  // 非 /api/* 的路径在 worker.js 里交回 env.ASSETS。
+  "main": "src/worker.js",
+
+  // 绑到 submit 子域名。
+  // custom_domain: true 让 Cloudflare 自动建 DNS 记录 + 证书，
+  // 不用手工去 DNS 面板加 CNAME。
+  // 前提：xn--psszg58cydsdq780c.com 已经是 Cloudflare 上的 zone（主站迁 NS 时已经满足）。
+  "routes": [
+    {
+      "pattern": "submit.xn--psszg58cydsdq780c.com",
+      "custom_domain": true
+    }
+  ],
+
+  // 本地开发默认端口
+  "dev": {
+    "port": 8788
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}
