@@ -133,6 +133,13 @@ body::before {
   font: inherit; font-size: 14.5px; font-weight: 700; cursor: pointer;
   transition: background-color .2s, border-color .2s, color .2s, transform .2s, opacity .2s;
 }
+/* 按钮里的图标必须锁死尺寸。
+   漏了这条会出问题：.btn 是 inline-flex，svg 作为 flex item 默认 flex-shrink: 1 ——
+   按钮宽度一紧张，浏览器就去压 svg，把它挤成半截。
+   （GitHub 那个图标就踩过这个：光在 HTML 上写 width/height 不够，
+     flex 布局会无视它去压缩元素。）
+   flex: 0 0 auto 明确告诉 flex：别动它。 */
+.btn svg { flex: 0 0 auto; width: 18px; height: 18px; display: block; }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn.primary { margin-top: 16px; background: var(--ink); color: #2a2000; }
 .btn.primary:not(:disabled):hover, .btn.primary:not(:disabled):focus-visible {

@@ -371,7 +371,7 @@
     L.push('- [ ] 文件名清楚（会显示在展览馆里，鼠标悬停可见）');
     L.push('');
     L.push('> 合并后 Cloudflare 会自动重新部署，作品出现在 ' +
-           '[奶龙展览馆](https://xn--psszg58cydsdq780c.com/show.html) 对应学院的卡片里。');
+           '[奶龙展览馆](https://xn--psszg58cydsdq780c.com/show) 对应学院的卡片里。');
 
     return L.join('\n');
   }
