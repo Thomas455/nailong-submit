@@ -383,8 +383,48 @@
     return (n / 1024 / 1024).toFixed(2) + ' MB';
   }
 
+  /* ============================================================
+     查看「我自己投过的稿」
+
+     思路：GitHub 的 PR 列表接口支持 head 筛选，
+     head={用户名}:submit/xxx 能精确筛出本站创建的 PR。
+
+     为什么不用 localStorage 记 PR 编号：
+     那样刷新后不用重新登录就能看，但 token 也得跟着持久化 ——
+     一旦页面有 XSS，public_repo 权限的 token 就被偷走了。
+     现在的取舍是：token 只活在内存里，刷新要重新登录。
+     投稿不是高频操作，这个代价可以接受。
+     ============================================================ */
+  function listMyPRs(token, login) {
+    // state=all：已合并的（GitHub 把它算 closed）也要看到，否则投过的稿会凭空消失
+    var url = '/repos/' + CFG.owner + '/' + CFG.repo + '/pulls' +
+              '?state=all&per_page=100&head=' +
+              encodeURIComponent(login + ':submit/');
+
+    return req(token, 'GET', url).then(function (list) {
+      // 只留本站的分支（head 筛选理论上够，但保险起见再过一遍）
+      return (list || []).filter(function (pr) {
+        return pr.head && pr.head.ref && pr.head.ref.indexOf('submit/') === 0;
+      }).map(function (pr) {
+        // 从标题里还原学院和件数：[投稿] 学院名 · N 件作品
+        var m = /^\[投稿\]\s*(.+?)\s*·\s*(\d+)\s*件作品/.exec(pr.title || '');
+        return {
+          number: pr.number,
+          url: pr.html_url,
+          title: pr.title,
+          college: m ? m[1] : (pr.title || '').replace(/^\[投稿\]\s*/, ''),
+          count: m ? parseInt(m[2], 10) : null,
+          status: pr.merged ? 'merged' : (pr.state === 'open' ? 'open' : 'closed'),
+          createdAt: pr.created_at,
+          updatedAt: pr.updated_at
+        };
+      });
+    });
+  }
+
   global.SubmitGitHub = {
     submit: submit,
+    listMyPRs: listMyPRs,
     buildPRBody: buildPRBody,   // 导出给测试用
     _req: req,
     _toBase64: toBase64

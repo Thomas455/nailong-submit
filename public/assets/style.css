@@ -126,6 +126,55 @@ body::before {
   color: var(--ink); font-weight: 700; font-size: 12.5px;
 }
 
+/* ---------- 我投过的稿 ---------- */
+.mini {
+  margin-left: auto;
+  padding: 5px 13px; border-radius: 999px; cursor: pointer;
+  background: rgba(254, 206, 14, .12); border: 1px solid var(--line);
+  color: var(--ink); font: inherit; font-size: 12.5px; font-weight: 700;
+  transition: background-color .2s, transform .2s;
+}
+.mini:hover, .mini:focus-visible { background: var(--track); transform: translateY(-1px); }
+
+.mine { list-style: none; display: flex; flex-direction: column; gap: 9px; }
+
+.mine-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 13px; border-radius: 12px;
+  background: #0d1224; border: 1px solid rgba(255, 255, 255, .06);
+  transition: border-color .2s, background-color .2s;
+}
+.mine-item:hover { background: var(--card-hi); border-color: var(--line); }
+
+.mine-link {
+  /* flex: 1 + min-width: 0 —— 让这一列可以收缩到内容以下，
+     学院名太长时走 text-overflow 省略，而不是把右边的状态标签挤扁。 */
+  flex: 1 1 auto; min-width: 0;
+  display: flex; flex-direction: column; gap: 3px;
+  color: var(--fg); text-decoration: none;
+}
+.mine-link:hover .mine-college { color: var(--ink); }
+.mine-college {
+  font-size: 14px; font-weight: 700;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: color .2s;
+}
+.mine-meta { font-size: 12px; color: var(--muted); }
+.mine-meta b { color: var(--ink); }
+
+.mine-status {
+  flex: 0 0 auto;
+  padding: 4px 11px; border-radius: 999px;
+  font-size: 12px; font-weight: 700;
+  /* nowrap：状态词只有三个字，被压缩就没法看了。
+     真正该被压缩的是左边的学院名（那边已经有省略号兜着）。 */
+  white-space: nowrap;
+}
+/* 三个状态用颜色区分，和 GitHub 自己的语义保持一致 */
+.mine-status.open   { background: rgba(254, 206, 14, .16); color: var(--ink); }
+.mine-status.merged { background: rgba( 61, 220, 132, .16); color: var(--go); }
+.mine-status.closed { background: rgba(255, 107,  96, .14); color: var(--warn); }
+
 /* ---------- 按钮 ---------- */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;

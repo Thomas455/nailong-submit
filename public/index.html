@@ -10,6 +10,19 @@
 <!-- 只要页签图标。不要 apple-touch-icon —— 那是个 113KB 的 PNG，
      只有「添加到主屏幕」才用得上，而投稿页是个工具页，没人会收藏到主屏。 -->
 <link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48">
+<!-- 百度统计。dns-prefetch/preconnect 让 DNS 和 TLS 握手提前开始，
+     不占用首屏渲染的关键路径。 -->
+<link rel="dns-prefetch" href="//hm.baidu.com">
+<link rel="preconnect" href="https://hm.baidu.com" crossorigin>
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?55da611c8a8236b5f6e61a2d346e48c0";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
@@ -47,6 +60,16 @@
       用 GitHub 登录
     </button>
     <div class="who" id="whoami" hidden></div>
+  </section>
+
+  <!-- ========== 我投过的稿 ========== -->
+  <section class="step" id="stepMine" hidden>
+    <div class="step-head">
+      <span class="num">★</span>
+      <h2>我投过的稿</h2>
+      <button class="mini" id="refreshMine" type="button" title="刷新状态">刷新</button>
+    </div>
+    <div id="mineList"></div>
   </section>
 
   <!-- ========== 第二步：选学院 ========== -->

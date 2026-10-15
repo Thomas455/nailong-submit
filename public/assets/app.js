@@ -34,6 +34,7 @@
   var drop = $('drop'), fileInput = $('fileInput'), filesEl = $('files'), counter = $('counter');
   var extraNote = $('extraNote'), submitBtn = $('submitBtn'), logoutBtn = $('logoutBtn');
   var logBox = $('log'), logTitle = $('logTitle'), logSteps = $('logSteps'), logResult = $('logResult');
+  var stepMine = $('stepMine'), mineList = $('mineList'), refreshMine = $('refreshMine');
 
   /* ============================================================
      一、登录
@@ -126,11 +127,83 @@
       step3.hidden = false;
       step4.hidden = false;
       step2.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+      // 顺手拉一下「我投过的稿」
+      stepMine.hidden = false;
+      loadMine();
     }).catch(function (e) {
       alert('登录状态有问题：' + e.message + '\n请重新登录。');
       state.token = null;
     });
   }
+
+  /* ============================================================
+     我投过的稿：查自己 PR 的审核状态
+     ============================================================ */
+
+  function loadMine() {
+    if (!state.token || !state.login) return;
+
+    mineList.innerHTML = '<p class="note">正在查…</p>';
+
+    window.SubmitGitHub.listMyPRs(state.token, state.login)
+      .then(function (list) {
+        renderMine(list);
+      })
+      .catch(function (e) {
+        // 查不到不影响投稿，只是看不到历史记录而已 —— 别弹窗吓人
+        mineList.innerHTML = '<p class="note">查不到投稿记录：' + escapeHtml(e.message) + '</p>';
+      });
+  }
+
+  var STATUS_TEXT = {
+    open:   { label: '待审核', cls: 'open' },
+    merged: { label: '已合并', cls: 'merged' },
+    closed: { label: '已关闭', cls: 'closed' }
+  };
+
+  function renderMine(list) {
+    if (!list.length) {
+      mineList.innerHTML = '<p class="note">你还没有投过稿。上面挑个学院开始吧。</p>';
+      return;
+    }
+
+    // 新的在上（按 PR 编号排，编号越大越新）
+    list.sort(function (a, b) { return b.number - a.number; });
+
+    var html = '<ul class="mine">';
+    list.forEach(function (pr) {
+      var s = STATUS_TEXT[pr.status] || STATUS_TEXT.closed;
+      var when = fmtDate(pr.updatedAt);
+      var cnt = pr.count ? ('<b>' + pr.count + '</b> 件') : '';
+      html += '<li class="mine-item">' +
+        '<a class="mine-link" href="' + pr.url + '" target="_blank" rel="noopener">' +
+          '<span class="mine-college">' + escapeHtml(pr.college) + '</span>' +
+          '<span class="mine-meta">' + cnt + ' · #' + pr.number + ' · ' + when + '</span>' +
+        '</a>' +
+        '<span class="mine-status ' + s.cls + '">' + s.label + '</span>' +
+      '</li>';
+    });
+    html += '</ul>';
+
+    // 状态说明，省得用户猜「已关闭」是什么意思
+    html += '<p class="note small">' +
+      '「待审核」= 维护者还没看；「已合并」= 作品已经上线；' +
+      '「已关闭」= PR 被关掉了（可能是你撤回，也可能没通过）。' +
+      '状态点右上角「刷新」更新。</p>';
+
+    mineList.innerHTML = html;
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    var pad = function (n) { return ('0' + n).slice(-2); };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+
+  refreshMine.addEventListener('click', loadMine);
 
   logoutBtn.addEventListener('click', function () {
     // 内存里的 token 清掉就没了（没存 localStorage）
@@ -142,6 +215,7 @@
     whoami.hidden = true;
     loginBtn.hidden = false;
     step2.hidden = step3.hidden = step4.hidden = true;
+    stepMine.hidden = true;      // 记录是按登录用户查的，退出就没意义了
     logBox.hidden = true;
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
@@ -480,6 +554,9 @@
         state.items = [];
         renderFiles();
         extraNote.value = '';
+
+        // 刚投的那条要立刻出现在「我投过的稿」里，不然用户会以为没提交成功
+        loadMine();
       })
       .catch(function (e) {
         if (lines.length) lines[lines.length - 1].el.className = 'done';
