@@ -36,6 +36,25 @@
     "port": 8788
   },
 
+  // ==========================================================================
+  // 环境变量
+  //
+  // GITHUB_CLIENT_ID 是**公开值** —— 它会出现在授权链接里
+  // （https://github.com/login/oauth/authorize?client_id=...），
+  // 任何人打开授权页都能看到。写在这里是为了每次部署自动带上，
+  // 不用手工去 Dashboard 配。
+  //
+  // ⚠️ GITHUB_CLIENT_SECRET 绝不能写在这里！
+  //    它一旦进 git 就等于公开，别人能拿它冒充这个应用。
+  //    用命令配，存进 Cloudflare 的加密存储：
+  //        npx wrangler secret put GITHUB_CLIENT_SECRET
+  //    或者在 Dashboard → Worker → Settings → Variables and Secrets 里
+  //    加一条，类型选 Secret。
+  // ==========================================================================
+  "vars": {
+    "GITHUB_CLIENT_ID": "Ov23lixg2nDUNSnqhIwn"
+  },
+
   "observability": {
     "enabled": true
   }

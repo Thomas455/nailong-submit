@@ -41,7 +41,7 @@ Cloudflare 自动部署 → 作品出现在展览馆
 
 ```
 public/                     部署出去的静态文件
-  submit.html               投稿页
+  index.html                投稿页（叫 index.html 是为了根路径能直接打开）
   assets/
     config.js               仓库坐标 + 学院名单 ← 改这里就能换个仓库
     style.css               样式（跟着主站的深色主题）
@@ -67,21 +67,40 @@ GitHub → Settings → Developer settings → **OAuth Apps** → New OAuth App
 | Homepage URL | `https://submit.xn--psszg58cydsdq780c.com` |
 | **Authorization callback URL** | `https://submit.xn--psszg58cydsdq780c.com/api/callback` |
 
-创建后会拿到 **Client ID** 和 **Client Secret**，下一步要用。
+创建后会拿到 **Client ID** 和 **Client Secret**。
 
 > ⚠️ callback URL 必须**完全一致**（含协议、子域名、路径），差一个字符 GitHub 就会拒绝。
 > 本地开发时再加一个 `http://127.0.0.1:8788/api/callback` 也可以。
+>
+> **OAuth App 页面上的两个勾选项建议都别勾：**
+> · `Allow wildcard matching` —— 勾了会让任意子域名都能接收 token，没必要扩大攻击面
+> · `Expire user access tokens` —— 勾了 GitHub 只发 8 小时有效的 token 并给一个
+>   `refresh_token`，而本站**没有实现刷新逻辑**。8 小时后用户会遇到「token 失效」。
 
-### 2. 配环境变量
+### 2. 配 Client ID 和 Secret
 
-Client Secret 绝对不能写进代码（写进去等于公开）。用 wrangler 存成加密变量：
+**Client ID** 是公开值（会出现在授权链接里），已经写进 `wrangler.jsonc` 的 `vars`，
+每次部署自动带上：
+
+```jsonc
+"vars": {
+  "GITHUB_CLIENT_ID": "Ov23lixg2nDUNSnqhIwn"
+}
+```
+
+**Client Secret** 绝对不能写进代码 —— 写进去就等于公开，别人能拿它冒充这个应用。
+用命令配，存进 Cloudflare 的加密存储：
 
 ```powershell
-npx wrangler secret put GITHUB_CLIENT_ID
 npx wrangler secret put GITHUB_CLIENT_SECRET
 ```
 
+（或者在 Dashboard → Worker → Settings → Variables and Secrets 里加一条，
+**类型必须选 Secret** 而不是 Text。）
+
 ### 3. 部署
+
+推代码到 GitHub 就会自动部署（Cloudflare 的 Git 集成）。想在本地手动部署：
 
 ```powershell
 npx wrangler deploy
