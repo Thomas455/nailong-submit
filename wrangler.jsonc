@@ -53,9 +53,15 @@
   "vars": {
     "GITHUB_CLIENT_ID": "Ov23lixg2nDUNSnqhIwn",
 
-    // Turnstile 的 site key 是公开的（前端要用）。
-    // 从 Cloudflare 后台 → Turnstile → 你的站点 → Widget 里拿。
-    "TURNSTILE_SITE_KEY": "",
+    // Turnstile 的 site key 是公开值 —— 它本来就写在前端 HTML 里，
+    // 任何人打开投稿页源码都能看到。
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAFXroYBHyKhkBsXt",
+
+    // 允许进管理页的 GitHub 用户名。
+    // 放明文而不是 secret：它就是你的用户名，仓库里到处都是（README、
+    // 提交记录、PR 链接），不算秘密。真正的安全边界是「能不能通过 OAuth
+    // 认证成这个人」，那一步由服务端校验，白名单比对在这里做。
+    "ADMIN_LOGIN": "Thomas455",
 
     // 同一个 IP 两次投稿的最小间隔（秒）。默认 30 分钟。
     "RATE_LIMIT": "1800"
@@ -65,12 +71,10 @@
   // ⚠️ 秘密变量：用 wrangler secret put 配，不要写进这个文件
   // ==========================================================================
   //   GITHUB_CLIENT_SECRET   OAuth Client Secret（也用作会话签名密钥）
-  //   ADMIN_LOGIN            允许进管理页的 GitHub 用户名，如 "Thomas455"
   //   BOT_TOKEN              小号的 token —— 唯一会写仓库的凭据
   //   TURNSTILE_SECRET       Turnstile 服务端密钥
   //
   //   npx wrangler secret put GITHUB_CLIENT_SECRET
-  //   npx wrangler secret put ADMIN_LOGIN
   //   npx wrangler secret put BOT_TOKEN
   //   npx wrangler secret put TURNSTILE_SECRET
 
