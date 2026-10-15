@@ -44,6 +44,22 @@ var _hmt = _hmt || [];
     <p>选好学院，把作品拖进来，剩下的交给奶龙。</p>
   </header>
 
+  <!-- ========== 选一条路 ==========
+       两条路都通向同一个地方（作品出现在展览馆里），区别只在提交方式：
+       · GitHub 登录 —— 直接提 PR，作者是你自己（要能连上 GitHub）
+       · 游客投稿   —— 不用登录，先进审核队列，你审核通过后才发布（国内可用）
+  -->
+  <div class="modes" id="modes">
+    <button class="mode" id="modeGh" type="button" aria-pressed="true">
+      <b>用 GitHub 登录</b>
+      <span>直接提交，作者是你自己</span>
+    </button>
+    <button class="mode" id="modeGuest" type="button" aria-pressed="false">
+      <b>游客投稿</b>
+      <span>不用登录 · 先进审核队列</span>
+    </button>
+  </div>
+
   <!-- ========== 第一步：登录 ========== -->
   <section class="step" id="step1">
     <div class="step-head">
@@ -124,7 +140,16 @@ var _hmt = _hmt || [];
       <button class="btn primary" id="submitBtn" type="button" disabled>提交投稿</button>
       <button class="btn ghost" id="logoutBtn" type="button">退出登录</button>
     </div>
-    <p class="note small">
+
+    <!-- 游客模式才会显示：验证码 -->
+    <div id="guestBits" hidden>
+      <div class="ts-wrap">
+        <div class="field-label">完成人机验证</div>
+        <div id="turnstile" class="ts"></div>
+      </div>
+    </div>
+
+    <p class="note small" id="submitHint">
       提交后会创建 Pull Request。主站维护者合并后，作品会出现在
       <a href="https://xn--psszg58cydsdq780c.com/show" target="_blank" rel="noopener">奶龙展览馆</a>
       对应学院的卡片里。
@@ -138,8 +163,24 @@ var _hmt = _hmt || [];
     <div class="log-result" id="logResult"></div>
   </div>
 
+  <!-- ========== 查投稿状态（游客投稿的人用） ========== -->
+  <section class="step" id="stepStatus" hidden>
+    <div class="step-head">
+      <span class="num">?</span>
+      <h2>查投稿状态</h2>
+    </div>
+    <p class="note">提交后会给你一个六位编号，用它查审核结果。</p>
+    <div class="row">
+      <input type="text" id="statusId" maxlength="6" placeholder="例如 A3F7K2"
+             autocomplete="off" spellcheck="false" aria-label="投稿编号">
+      <button class="btn ghost" id="statusBtn" type="button">查询</button>
+    </div>
+    <div id="statusResult"></div>
+  </section>
+
   <footer class="foot">
     <p>投稿站 · <a href="https://xn--psszg58cydsdq780c.com/home">宇宙奶龙大学</a></p>
+    <p><a href="/admin.html">管理页</a></p>
   </footer>
 </div>
 

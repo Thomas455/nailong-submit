@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>投稿审核 · 宇宙奶龙大学</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#080b1a">
+<link rel="icon" href="favicon.ico" sizes="16x16 32x32">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/admin.css">
+</head>
+<body class="admin">
+
+<div class="flow" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+<div class="frost" aria-hidden="true"></div>
+
+<div class="wrap">
+
+  <header class="head">
+    <h1>投稿审核</h1>
+    <p>游客提交的内容先进这里，你点「发布」才会进仓库。</p>
+  </header>
+
+  <!-- 登录 -->
+  <section class="step" id="gate">
+    <div class="step-head"><span class="num">1</span><h2>用 GitHub 账号登录</h2></div>
+    <p class="note">
+      只读取你的用户名来判断你是不是管理员，<b>不需要任何仓库权限</b>。
+      白名单由服务端 <code>ADMIN_LOGIN</code> 决定，没配就谁都进不来。
+    </p>
+    <button class="btn primary" id="adminLogin" type="button">
+      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor"
+        d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.81.61a6.72 6.72 0 0 1 8-6c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub 登录
+    </button>
+    <p class="note small" id="gateMsg"></p>
+  </section>
+
+  <!-- 队列 -->
+  <section id="board" hidden>
+    <div class="bar">
+      <span id="who"></span>
+      <button class="mini" id="reload" type="button">刷新</button>
+      <a class="mini" href="index.html">投稿页</a>
+    </div>
+
+    <div id="empty" class="empty" hidden>
+      <b>队列是空的</b>
+      <span>还没有待审核的投稿。</span>
+    </div>
+
+    <ul class="queue" id="queue"></ul>
+  </section>
+
+</div>
+
+<!-- 详情抽屉 -->
+<div class="drawer" id="drawer" hidden>
+  <div class="drawer-bg" id="drawerBg"></div>
+  <div class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="dTitle">
+    <button class="drawer-close" id="drawerClose" type="button" aria-label="关闭">&times;</button>
+    <h2 id="dTitle">投稿详情</h2>
+    <div id="dBody"></div>
+    <div class="drawer-actions">
+      <button class="btn primary" id="btnPublish" type="button">发布（建 PR）</button>
+      <button class="btn primary alt" id="btnPublishDirect" type="button">直接提交（不建 PR）</button>
+      <button class="btn ghost" id="btnReject" type="button">拒绝</button>
+    </div>
+    <label class="field">
+      <span>审核备注（会记在 PR 里；拒绝时也会给投稿人看）</span>
+      <textarea id="adminNote" rows="2" placeholder="可选"></textarea>
+    </label>
+    <p class="note small" id="dMsg"></p>
+  </div>
+</div>
+
+<script src="assets/admin.js"></script>
+</body>
+</html>

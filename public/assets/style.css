@@ -126,6 +126,46 @@ body::before {
   color: var(--ink); font-weight: 700; font-size: 12.5px;
 }
 
+/* ---------- 模式切换（GitHub 登录 / 游客投稿） ---------- */
+.modes {
+  display: grid; gap: 10px; margin-bottom: 16px;
+  grid-template-columns: 1fr 1fr;
+}
+.mode {
+  display: flex; flex-direction: column; gap: 3px; align-items: flex-start;
+  padding: 13px 15px; border-radius: 14px; cursor: pointer; text-align: left;
+  background: var(--card); border: 1px solid var(--line);
+  color: var(--fg); font: inherit;
+  transition: background-color .2s, border-color .2s, transform .2s, opacity .2s;
+}
+.mode:hover:not(:disabled) { background: var(--card-hi); transform: translateY(-1px); }
+.mode b { font-size: 14.5px; font-weight: 700; }
+.mode span { font-size: 12px; color: var(--muted); }
+.mode[aria-pressed="true"] {
+  background: var(--track); border-color: var(--ink); color: var(--ink);
+}
+.mode[aria-pressed="true"] span { color: rgba(254, 206, 14, .8); }
+.mode:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ---------- Turnstile ---------- */
+.ts-wrap { margin-top: 18px; }
+.field-label { margin-bottom: 9px; font-size: 13.5px; color: var(--muted); }
+.ts { min-height: 65px; }
+/* Turnstile 默认是亮色卡片，在深色底上给个暗色偏好 */
+.ts iframe { color-scheme: dark; }
+
+/* ---------- 查状态 ---------- */
+.row { display: flex; gap: 10px; align-items: stretch; }
+.row input {
+  flex: 1; min-width: 0; padding: 11px 14px; border-radius: 12px;
+  background: #0d1224; border: 1px solid var(--line); color: var(--fg);
+  font: inherit; font-size: 15px; letter-spacing: .12em; text-transform: uppercase;
+}
+.row input:focus { outline: none; border-color: var(--ink); }
+.row .btn { margin-top: 0; }
+#statusResult:not(:empty) { margin-top: 14px; font-size: 13.5px; line-height: 1.8; }
+#statusResult a { color: var(--ink); }
+
 /* ---------- 我投过的稿 ---------- */
 .mini {
   margin-left: auto;

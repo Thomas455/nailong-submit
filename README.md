@@ -2,38 +2,75 @@
 
 给 [宇宙奶龙大学.com](https://xn--psszg58cydsdq780c.com/) 展览馆投稿的页面。
 
-**访客用 GitHub 登录 → 选学院 → 拖入图片 → 提交**，就会自动在
-[主站仓库](https://github.com/Thomas455/nailong-university) 创建一个 Pull Request。
-作者是投稿者本人（用的是他自己的 token），不是机器人，所以有据可查。
+有**两条投稿路径**，选哪条都行：
+
+| | GitHub 登录 | 游客投稿 |
+| --- | --- | --- |
+| 要账号吗 | 要 | **不要** |
+| 国内能用吗 | 需要能连上 GitHub | **能** |
+| 作者是谁 | 投稿者本人 | 小号（经你审核后发布） |
+| 到展览馆要多久 | 你合并 PR 后 | 你审核发布后 |
+| 有审核吗 | 你在 GitHub 上看 PR | 投稿站的管理页 |
+
+两条路最后都会把作品写进 `works/学院名/`，效果一样。
 
 ---
 
 ## 它解决什么问题
 
-以前投稿要会 git：fork、建分支、放文件、改 `list.txt`、提 PR ——
-对不写代码的人是硬门槛。
+投稿门槛原来有两道：
 
-现在投稿者只要有个 GitHub 账号，剩下的全自动。
+1. **要会 git** —— fork、建分支、改 `list.txt`、提 PR
+2. **要能连上 GitHub** —— 授权页在 `github.com`，国内时好时坏
+
+现在两条都没了：
+
+- 会 git 的走 GitHub 登录，一键提 PR，作者是自己的账号
+- 不会 git / 连不上 GitHub 的走游客投稿，填个表上传就行，
+  内容先进审核队列，**你看过之后才用小号发进仓库**
 
 ---
 
 ## 工作流程
 
+### 路径一：GitHub 登录
+
 ```
-投稿者浏览 submit.宇宙奶龙大学.com
-        ↓ 点「用 GitHub 登录」（OAuth 弹窗）
+投稿者在投稿页登录 GitHub
         ↓ 选学院、拖入图片
         ↓ 浏览器本地：转 webp + 压缩 + 抹掉 EXIF
-        ↓ 用他自己的 token：
-           建 fork → 同步最新 → 建分支
+        ↓ 用他自己的 token：建 fork → 同步 → 建分支
            → 传图 → 更新 list.txt → 提 PR
-        ↓
-维护者在 GitHub 上收到 PR
-        ↓ 看「作品明细」表（尺寸/体积/压缩率）和「打开」链接
-        ↓ 合并
-        ↓
-Cloudflare 自动部署 → 作品出现在展览馆
+        ↓ 你在 GitHub 上合并
+        ↓ Cloudflare 自动部署
 ```
+
+### 路径二：游客投稿
+
+```
+投稿者选学院、拖入图片、填个留言、过 Turnstile 验证码
+        ↓ 浏览器本地：转 webp + 压缩 + 抹掉 EXIF
+        ↓ 提交到 Worker
+        ↓ ★ 图片存进 R2 暂存区，不碰仓库 ★
+        ↓ 拿到一个六位投稿编号（记下来可查状态）
+        ↓
+你打开 submit.宇宙奶龙大学.com/admin.html 用 GitHub 登录
+        ↓ 看到待审列表，预览每张图
+        ↓ 点「发布」→ Worker 用小号 token：
+           建分支 → 从 R2 取图写进 works/ → 更新 list.txt → 建 PR
+        ↓
+你合并 PR → Cloudflare 部署 → 作品上线
+```
+
+**为什么要绕这一圈？**
+
+因为游客投稿是**对全网开放的上传口**。如果直接提 PR：
+
+- 仓库会被垃圾内容灌满，你得在 GitHub 上逐个关掉
+- GitHub 会把仓库标记为被滥用
+- 所有人共用一个小号，API 限额挤在一起，而且**查不出是谁投的**
+
+加了审核队列，仓库里只进干净内容；被拒的留在 R2，定期清掉即可。
 
 ---
 
@@ -42,15 +79,23 @@ Cloudflare 自动部署 → 作品出现在展览馆
 ```
 public/                     部署出去的静态文件
   index.html                投稿页（叫 index.html 是为了根路径能直接打开）
+  admin.html                管理页：审核队列、发布、拒绝
   assets/
     config.js               仓库坐标 + 学院名单 ← 改这里就能换个仓库
     style.css               样式（跟着主站的深色主题）
     image.js                图片处理：转 webp / 缩放 / 压缩 / 抹 EXIF
-    github.js               GitHub API：fork / 分支 / 上传 / PR
-    app.js                  页面逻辑：登录 / 选学院 / 选图 / 提交
-src/
-  worker.js                 OAuth 代理（唯一需要服务端的部分）
-wrangler.jsonc              Cloudflare Workers 配置
+    github.js               GitHub API（登录投稿那条路用）
+    app.js                  投稿页逻辑：选模式 / 选学院 / 选图 / 提交
+    admin.js                管理页逻辑：登录 / 队列 / 发布
+    admin.css               管理页样式
+src/                        Worker 服务端
+  worker.js                 入口：把请求分给下面三个模块
+  admin.js                  管理员登录（最小权限 OAuth + 签名会话 cookie）
+  guest.js                  游客投稿：校验 + 存 R2（不碰仓库）
+  review.js                 审核：列表 / 详情 / 发布 / 拒绝
+wrangler.jsonc              Cloudflare Workers 配置（含 R2 绑定）
+tools/
+  test_worker.mjs           服务端测试：58 项，跑的是真实 Worker 源码
 ```
 
 ---
@@ -65,40 +110,74 @@ GitHub → Settings → Developer settings → **OAuth Apps** → New OAuth App
 | --- | --- |
 | Application name | `宇宙奶龙大学 投稿`（随便，授权页会显示） |
 | Homepage URL | `https://submit.xn--psszg58cydsdq780c.com` |
-| **Authorization callback URL** | `https://submit.xn--psszg58cydsdq780c.com/api/callback` |
+| **Authorization callback URL** | `https://submit.xn--psszg58cydsdq780c.com/api/admin/callback` |
 
-创建后会拿到 **Client ID** 和 **Client Secret**。
+> ⚠️ 回调地址是 `/api/admin/callback`（不是 `/api/callback`）。GitHub 一个 App 只能填一个回调地址，
+> 这里统一用管理员那套 —— 投稿那条路现在不再需要 OAuth 了。
+>
+> 授权页上勾选项建议都别勾：
+> · `Allow wildcard matching` —— 勾了会让任意子域名能收 token
+> · `Expire user access tokens` —— 勾了只发 8 小时有效的 token，本站没实现刷新逻辑
 
 > ⚠️ callback URL 必须**完全一致**（含协议、子域名、路径），差一个字符 GitHub 就会拒绝。
-> 本地开发时再加一个 `http://127.0.0.1:8788/api/callback` 也可以。
->
-> **OAuth App 页面上的两个勾选项建议都别勾：**
-> · `Allow wildcard matching` —— 勾了会让任意子域名都能接收 token，没必要扩大攻击面
-> · `Expire user access tokens` —— 勾了 GitHub 只发 8 小时有效的 token 并给一个
->   `refresh_token`，而本站**没有实现刷新逻辑**。8 小时后用户会遇到「token 失效」。
+> 本地开发时再加一个 `http://127.0.0.1:8788/api/admin/callback` 也可以。
 
-### 2. 配 Client ID 和 Secret
+### 2. 建小号（只有游客投稿需要）
 
-**Client ID** 是公开值（会出现在授权链接里），已经写进 `wrangler.jsonc` 的 `vars`，
-每次部署自动带上：
+游客投稿是用一个**小号**把内容发进主仓库的。这个小号需要：
 
-```jsonc
-"vars": {
-  "GITHUB_CLIENT_ID": "Ov23lixg2nDUNSnqhIwn"
-}
-```
+1. 注册一个独立的 GitHub 账号（**不要用你的主账号** —— 主账号有仓库所有权，
+   万一 token 泄露后果太大）
+2. 给它一个 **Fine-grained personal access token**：
+   - Resource owner：小号自己
+   - Repository access：Only select repositories → 选 `nailong-university`
+   - Permissions → **Contents: Read and write**、**Pull requests: Read and write**
+   - 其余一律不给
+3. 设一个到期时间（建议 90 天，到期前重新签一个）
 
-**Client Secret** 绝对不能写进代码 —— 写进去就等于公开，别人能拿它冒充这个应用。
-用命令配，存进 Cloudflare 的加密存储：
+> 为什么不用主账号的小号？主账号对仓库有完全权限（能改设置、能删仓库）。
+> 小号只有 Contents/PR 两个权限，就算泄露别人也只能改作品文件。
+
+### 3. 配环境变量
+
+**Client ID** 是公开值，已经写进 `wrangler.jsonc` 的 `vars`，每次部署自动带上。
+
+其余四个是**秘密**，用命令配（存进 Cloudflare 加密存储，不进 git）：
 
 ```powershell
-npx wrangler secret put GITHUB_CLIENT_SECRET
+npx wrangler secret put GITHUB_CLIENT_SECRET   # OAuth App 的 Client Secret
+npx wrangler secret put ADMIN_LOGIN            # 你的 GitHub 用户名，如 Thomas455
+npx wrangler secret put BOT_TOKEN              # 第 2 步的小号 token
+npx wrangler secret put TURNSTILE_SECRET       # 见下一步
 ```
 
-（或者在 Dashboard → Worker → Settings → Variables and Secrets 里加一条，
+（也可以在 Dashboard → Worker → Settings → Variables and Secrets 里逐条添加，
 **类型必须选 Secret** 而不是 Text。）
 
-### 3. 部署
+### 4. 建 R2 存储桶
+
+游客投稿的图片先进这里，不直接进仓库：
+
+```bash
+npx wrangler r2 bucket create nailong-submissions
+npx wrangler r2 bucket create nailong-rate
+```
+
+（第二个是频控计数器，可以省略 —— 省略后会自动退回用第一个桶。）
+
+### 5. 开 Turnstile（防刷，免费）
+
+Cloudflare 后台 → **Turnstile** → Add a site：
+
+- Site name：随便
+- **Hostname**：`submit.xn--psszg58cydsdq780c.com`
+
+创建后拿到 **Site Key**（公开）和 **Secret Key**（保密）：
+
+- Site Key → 填进 `wrangler.jsonc` 的 `vars.TURNSTILE_SITE_KEY`
+- Secret Key → `npx wrangler secret put TURNSTILE_SECRET`
+
+### 6. 部署
 
 推代码到 GitHub 就会自动部署（Cloudflare 的 Git 集成）。想在本地手动部署：
 
@@ -112,7 +191,7 @@ custom domain，Cloudflare 会自动建 DNS 记录和证书，不用手工加 CN
 > 前提：`xn--psszg58cydsdq780c.com` 已经是 Cloudflare 上的一个 zone
 > （主站迁 NS 时已经满足）。
 
-### 4. 本地开发
+### 7. 本地开发
 
 ```powershell
 npx wrangler dev
@@ -145,6 +224,43 @@ npx wrangler dev
 ---
 
 ## 几个设计决定（以及为什么）
+
+### 为什么游客投稿要绕审核队列
+
+游客投稿是**对全网开放的上传口**。如果小号直接提 PR：
+
+- 仓库会被垃圾内容灌满，你得在 GitHub 上逐个关掉
+- GitHub 会把仓库标记为被滥用
+- 所有人共用一个小号，API 限额挤在一起，而且**查不出是谁投的**
+- 一旦 Worker 出了什么漏洞把 token 泄露出去，别人能用它往你**所有公开仓库**写东西
+
+加了审核队列之后：仓库里只进你看过的东西；小号 token 只在你点「发布」时才用一次。
+
+### 安全上做了什么（游客投稿是全网开放的，值得写清楚）
+
+游客投稿是**对全网开放的上传口**。任何人都能打，所以必须假设会被刷、被传垃圾。
+有几道硬约束：
+
+1. **Turnstile 验证码** —— 挡掉自动脚本
+2. **按 IP 频控** —— 挡掉慢速真人刷（默认 30 分钟一次）
+3. **学院名白名单** —— 不信任前端传来的字符串，必须在名单里（挡住路径穿越）
+4. **只看魔数不看后缀** —— 把 `.exe` 改名成 `.webp` 骗不过这一关；扩展名由魔数反推
+5. **SVG 一律拒收** —— SVG 能带 `<script onload>`，是最常见的 XSS 载体
+6. **文件名彻底消毒** —— 去掉路径成分和 Windows 保留字符
+7. **人工审核兜底** —— 上面任何一条漏了，队列里还有你一双眼睛
+8. **失败即拒绝** —— 任何校验不过都是「拒绝」，绝不「降级放过」
+
+管理员侧：
+
+- **服务端鉴权** —— 前端只是「没登录就显示登录按钮」，真正的拦截在每个接口里
+- **签名 HttpOnly cookie** —— 用 Client Secret 做 HMAC，无状态、不用数据库
+- **ADMIN_LOGIN 白名单** —— **没配就谁都进不来**（失败即拒绝，不是「没配就放行」）
+- **会话 12 小时过期**，且每次请求都重新查白名单（你删掉某人后他的 cookie 立刻失效）
+
+> ⚠️ **已知不足（诚实记录）**：服务端只做魔数校验，**不重新编码图片**。
+> 构造出来的「魔数是 PNG、内容是别的」的畸形文件仍可能通过。
+> 要彻底消除得在 Worker 里跑一次图片解码重编码（引入 Wasm，吃 CPU 额度）。
+> 当前靠魔数校验 + 人工审核兜底。
 
 ### 为什么图片在浏览器里处理，而不是在 Worker 里
 

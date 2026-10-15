@@ -17,6 +17,7 @@
 
   // ---- 状态 ----
   var state = {
+    mode: 'gh',             // 'gh' | 'guest'
     token: null,
     login: null,
     avatar: null,
@@ -35,6 +36,133 @@
   var extraNote = $('extraNote'), submitBtn = $('submitBtn'), logoutBtn = $('logoutBtn');
   var logBox = $('log'), logTitle = $('logTitle'), logSteps = $('logSteps'), logResult = $('logResult');
   var stepMine = $('stepMine'), mineList = $('mineList'), refreshMine = $('refreshMine');
+  var modeGh = $('modeGh'), modeGuest = $('modeGuest');
+  var guestBits = $('guestBits'), submitHint = $('submitHint');
+  var stepStatus = $('stepStatus'), statusId = $('statusId'), statusBtn = $('statusBtn'),
+      statusResult = $('statusResult');
+  var turnstileWidget = null;
+
+  /* ============================================================
+     零、选一条路（GitHub 登录 / 游客投稿）
+     ============================================================ */
+
+  function setMode(mode) {
+    if (state.mode === mode) return;
+    applyMode(mode);
+  }
+
+  // 真正干活的：设置状态 + 同步界面。首次初始化也走这里。
+  function applyMode(mode) {
+    state.mode = mode;
+
+    modeGh.setAttribute('aria-pressed', String(mode === 'gh'));
+    modeGuest.setAttribute('aria-pressed', String(mode === 'guest'));
+
+    var guest = mode === 'guest';
+
+    // 第 1 步（登录卡片）在游客模式下不显示；「我投过的稿」保持独立
+    step1.hidden = guest;
+    stepStatus.hidden = !guest;
+
+    submitBtn.textContent = guest ? '提交到审核队列' : '提交投稿';
+    if (guest) {
+      submitHint.innerHTML = '提交后会进入审核队列，维护者看过后才会发布到展览馆。' +
+        '图片里的手机定位等隐私信息会被自动抹掉。';
+      loadTurnstile();
+    } else {
+      submitHint.innerHTML = '提交后会创建 Pull Request。主站维护者合并后，作品会出现在 ' +
+        '<a href="https://xn--psszg58cydsdq780c.com/show" target="_blank" rel="noopener">奶龙展览馆</a>' +
+        '对应学院的卡片里。';
+      guestBits.hidden = true;
+    }
+
+    // 已选的文件保留（用户可能只是切回来）
+    updateCounter();
+  }
+
+  modeGh.addEventListener('click', function () { setMode('gh'); });
+  modeGuest.addEventListener('click', function () { setMode('guest'); });
+
+  /* ============================================================
+     Turnstile（游客模式的人机验证）
+     ============================================================ */
+
+  var guestCfg = null;   // 服务端下发的 site key
+
+  function loadTurnstile() {
+    if (guestBits.hidden === false && turnstileWidget) return;
+    if (!guestCfg || !guestCfg.turnstileSiteKey) {
+      guestBits.innerHTML = '<p class="note">验证码还没配好，暂时只能用 GitHub 登录投稿。</p>';
+      return;
+    }
+    if (!window.turnstile) {
+      // 按需加载：只有游客模式才拉这个脚本
+      var s = document.createElement('script');
+      s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+      s.async = true;
+      s.onload = mountTurnstile;
+      document.head.appendChild(s);
+    } else {
+      mountTurnstile();
+    }
+  }
+
+  function mountTurnstile() {
+    if (turnstileWidget || !window.turnstile || !guestCfg) return;
+    guestBits.hidden = false;
+    turnstileWidget = window.turnstile.render('#turnstile', {
+      sitekey: guestCfg.turnstileSiteKey,
+      callback: function () { updateCounter(); },
+      'expired-callback': function () { updateCounter(); },
+      'error-callback': function () { updateCounter(); }
+    });
+  }
+
+  function getTurnstileToken() {
+    if (state.mode !== 'guest') return 'N/A';     // GitHub 模式不用验证码
+    if (!turnstileWidget) return null;
+    try { return window.turnstile.getResponse(turnstileWidget); }
+    catch (e) { return null; }
+  }
+
+  function resetTurnstile() {
+    if (turnstileWidget) { try { window.turnstile.reset(turnstileWidget); } catch (e) {} }
+    updateCounter();
+  }
+
+  /* ============================================================
+     查投稿状态
+     ============================================================ */
+
+  statusBtn.addEventListener('click', function () {
+    var id = statusId.value.trim().toUpperCase();
+    if (!/^[0-9A-Z]{6}$/.test(id)) {
+      statusResult.innerHTML = '<p class="note">编号是六位大写字母或数字。</p>';
+      return;
+    }
+    statusResult.innerHTML = '<p class="note">查…</p>';
+    fetch('/api/guest/status?id=' + encodeURIComponent(id))
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j.ok) { statusResult.innerHTML = '<p class="note">' + escapeHtml(j.error || '查询失败') + '</p>'; return; }
+        if (j.status === 'pending') {
+          statusResult.innerHTML = '<p style="color:var(--ink)">编号 ' + id +
+            '：等待审核中。维护者看过后会发布。</p>';
+        } else if (j.status === 'published') {
+          statusResult.innerHTML = '<p style="color:var(--go)">编号 ' + id + '：已发布！' +
+            (j.prUrl ? ' <a href="' + escapeHtml(j.prUrl) + '" target="_blank" rel="noopener">查看提交</a>' : '') +
+            '</p>';
+        } else if (j.status === 'rejected') {
+          statusResult.innerHTML = '<p style="color:var(--warn)">编号 ' + id + '：没有通过审核。' +
+            (j.note ? '<br>原因：' + escapeHtml(j.note) : '') + '</p>';
+        } else {
+          statusResult.innerHTML = '<p class="note">没找到编号 ' + id + '，检查一下有没有输错。</p>';
+        }
+      })
+      .catch(function (e) {
+        statusResult.innerHTML = '<p class="note">查询失败：' + escapeHtml(e.message) + '</p>';
+      });
+  });
 
   /* ============================================================
      一、登录
@@ -122,7 +250,7 @@
       whoami.querySelector('b').textContent = u.login;
       loginBtn.hidden = true;
 
-      // 解锁后面两步
+      // 游客模式一开始就能用第 2~4 步（不用等登录）
       step2.hidden = false;
       step3.hidden = false;
       step4.hidden = false;
@@ -214,8 +342,9 @@
     renderFiles();
     whoami.hidden = true;
     loginBtn.hidden = false;
-    step2.hidden = step3.hidden = step4.hidden = true;
     stepMine.hidden = true;      // 记录是按登录用户查的，退出就没意义了
+    // 游客模式下这几步仍然可用，不要一起藏掉
+    if (state.mode === 'gh') step2.hidden = step3.hidden = step4.hidden = true;
     logBox.hidden = true;
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
@@ -450,7 +579,15 @@
     if (working) txt += '（' + working + ' 张处理中）';
     counter.textContent = txt;
 
-    var canSubmit = Boolean(state.token && state.college) && ready > 0 && working === 0 && !state.submitting;
+    var needAuth = state.mode === 'gh' && !state.token;
+    var canSubmit = !needAuth && Boolean(state.college) &&
+                    ready > 0 && working === 0 && !state.submitting;
+
+    // 游客模式还要过了验证码才能提交
+    if (canSubmit && state.mode === 'guest') {
+      canSubmit = Boolean(getTurnstileToken());
+    }
+
     submitBtn.disabled = !canSubmit;
     if (bad && ready === 0) submitBtn.disabled = true;
   }
@@ -473,7 +610,10 @@
 
   submitBtn.addEventListener('click', function () {
     if (state.submitting) return;
-    if (!state.token || !state.college) return;
+
+    // 两条路的共同前置：学院 + 至少一张图 + 名字合法
+    if (state.mode === 'gh' && (!state.token || !state.college)) return;
+    if (state.mode === 'guest' && !state.college) return;
 
     var ready = state.items.filter(function (i) { return i.status === 'ready'; });
     if (!ready.length) { alert('至少加一张作品'); return; }
@@ -501,15 +641,13 @@
     submitBtn.disabled = true;
     logBox.hidden = false;
     logTitle.className = '';
-    logTitle.textContent = '正在提交…';
+    logTitle.textContent = state.mode === 'guest' ? '正在提交…' : '正在提交…';
     logSteps.innerHTML = '';
     logResult.innerHTML = '';
     logBox.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
-    var lines = [];   // 进度行
-
+    var lines = [];
     function onStep(text) {
-      // 上一行标成完成，新的一行标成进行中
       if (lines.length) lines[lines.length - 1].el.className = 'done';
       var li = document.createElement('li');
       li.className = 'now';
@@ -519,58 +657,91 @@
       lines.push({ el: li });
       logBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
+    function done() { if (lines.length) lines[lines.length - 1].el.className = 'done'; }
 
     var job = {
       dir: state.college.dir,
       collegeName: state.college.name,
-      // info 带上尺寸/体积/画质，会写进 PR 描述 ——
-      // 维护者不用点开文件就能判断该不该合并
       items: ready.map(function (i) {
-        return {
-          name: i.outName + extOf(i.info.mime),
-          blob: i.blob,
-          info: i.info
-        };
+        return { name: i.outName + extOf(i.info.mime), blob: i.blob, info: i.info };
       }),
       note: extraNote.value.trim()
     };
 
-    window.SubmitGitHub.submit(state.token, state.login, job, onStep)
+    var pending = state.mode === 'guest'
+      ? submitGuest(job, ready, onStep, done)
+      : window.SubmitGitHub.submit(state.token, state.login, job, onStep);
+
+    pending
       .then(function (res) {
-        if (lines.length) lines[lines.length - 1].el.className = 'done';
+        done();
         logTitle.className = 'ok';
         logTitle.textContent = '投稿成功！';
 
-        var note = extraNote.value.trim();
-        logResult.innerHTML =
-          '<p>Pull Request 已经建好：<a href="' + res.prUrl + '" target="_blank" rel="noopener">#' +
-          res.prNumber + '</a></p>' +
-          '<p style="color:var(--muted);font-size:13px;margin-top:8px">' +
-          '维护者合并后，作品会出现在展览馆里。你可以在 GitHub 上跟踪这个 PR 的进度。</p>';
-        if (note) { /* 说明已经写进 PR 描述，这里不用重复 */ }
+        if (state.mode === 'guest') {
+          logResult.innerHTML =
+            '<p>投稿编号 <b style="color:var(--ink);font-size:17px">' + res.id + '</b></p>' +
+            '<p style="color:var(--muted);font-size:13px;margin-top:8px">' +
+            '已经送到审核队列，维护者看过后就会发布。' +
+            '用这个编号可以在下面「查投稿状态」里看进度。</p>';
+          // 游客模式下把编号直接填好，省得用户记
+          statusId.value = res.id;
+          stepStatus.hidden = false;
+        } else {
+          logResult.innerHTML =
+            '<p>Pull Request 已经建好：<a href="' + res.prUrl + '" target="_blank" rel="noopener">#' +
+            res.prNumber + '</a></p>' +
+            '<p style="color:var(--muted);font-size:13px;margin-top:8px">' +
+            '维护者合并后，作品会出现在展览馆里。你可以在 GitHub 上跟踪这个 PR 的进度。</p>';
+        }
 
-        // 提交完清空，避免手滑再点一次重复投
         state.items.forEach(function (i) { if (i.url) URL.revokeObjectURL(i.url); });
         state.items = [];
         renderFiles();
         extraNote.value = '';
 
-        // 刚投的那条要立刻出现在「我投过的稿」里，不然用户会以为没提交成功
-        loadMine();
+        // GitHub 模式下刷「我投过的稿」；游客模式重置验证码
+        if (state.mode === 'gh') loadMine();
+        else resetTurnstile();
       })
       .catch(function (e) {
-        if (lines.length) lines[lines.length - 1].el.className = 'done';
+        done();
         logTitle.className = 'bad';
         logTitle.textContent = '提交失败';
         logResult.innerHTML = '<p class="err">' + escapeHtml(e.message) + '</p>' +
-          '<p style="color:var(--muted);font-size:13px;margin-top:8px">' +
-          '已经上传的部分会留在你的仓库分支里，可以重试（会新建一个分支）。</p>';
+          (state.mode === 'guest' ? '' :
+           '<p style="color:var(--muted);font-size:13px;margin-top:8px">' +
+           '已经上传的部分会留在你的仓库分支里，可以重试（会新建一个分支）。</p>');
+        if (state.mode === 'guest') resetTurnstile();
       })
       .then(function () {
         state.submitting = false;
         updateCounter();
       });
   });
+
+  // 游客投稿：把处理好的图打包成 multipart 交给 Worker
+  function submitGuest(job, ready, onStep, done) {
+    onStep('打包图片…');
+    var fd = new FormData();
+    fd.append('college', job.dir);
+    if (job.note) fd.append('note', job.note);
+    // 文件名要单独带一份：FormData 里的 File 用的是处理前的临时名
+    job.items.forEach(function (it, i) {
+      fd.append('files', new File([it.blob], it.name, { type: it.info.mime }));
+    });
+    var ts = getTurnstileToken();
+    if (!ts) return Promise.reject(new Error('请先完成人机验证'));
+    fd.append('tsToken', ts);
+
+    onStep('上传到审核队列…');
+    return fetch('/api/guest/submit', { method: 'POST', body: fd })
+      .then(function (r) { return r.json().then(function (j) { return { r: r, j: j }; }); })
+      .then(function (x) {
+        if (!x.r.ok || !x.j.ok) throw new Error(x.j.error || ('HTTP ' + x.r.status));
+        return x.j;   // { ok, id }
+      });
+  }
 
   function extOf(mime) {
     return mime === 'image/webp' ? '.webp' : '.jpg';
@@ -580,15 +751,32 @@
      启动
      ============================================================ */
 
-  // 先问一下服务端 OAuth 配好了没，没配就直接提示，别让用户白点
+  // 游客模式的配置（Turnstile site key + 有没有配好）
+  fetch('/api/guest/config').then(function (r) { return r.json(); }).then(function (c) {
+    guestCfg = c;
+    if (!c.ready) {
+      modeGuest.setAttribute('aria-pressed', 'false');
+      modeGuest.disabled = true;
+      modeGuest.querySelector('span').textContent = '暂不可用';
+    }
+  }).catch(function () {
+    // 本地用 file:// 打开会走到这里，不影响看界面
+  });
+
+  // GitHub 登录那条路配好了没
   fetch('/api/config').then(function (r) { return r.json(); }).then(function (c) {
     if (!c.ready) {
       loginBtn.disabled = true;
       loginBtn.textContent = '服务端还没配好 OAuth（见 README）';
     }
-  }).catch(function () {
-    // 本地用 file:// 打开时会走到这里。不影响看界面。
-  });
+  }).catch(function () {});
+
+  // 默认走游客模式：国内用户常常连不上 GitHub，别一上来就逼他们登录。
+  // 第 2~4 步一开始就可见，不用等任何授权。
+  step2.hidden = false;
+  step3.hidden = false;
+  step4.hidden = false;
+  applyMode('guest');        // 内部会设置 state.mode 并同步界面
 
   updateCounter();
 })();

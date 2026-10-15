@@ -7,7 +7,7 @@
   // ⚠️ Worker 的 name 必须和主站那个不同，否则会互相覆盖部署。
   // ==========================================================================
   "name": "nailong-submit",
-  "compatibility_date": "2026-10-14",
+  "compatibility_date": "2026-10-15",
 
   // 静态资源：public/ 目录直接发；src/worker.js 处理 /api/*
   "assets": {
@@ -20,10 +20,26 @@
   // 非 /api/* 的路径在 worker.js 里交回 env.ASSETS。
   "main": "src/worker.js",
 
+  // R2：存待审的图片和投稿元数据。
+  // ★ 所有来自访客的数据都先落在这里，绝不直接进仓库 ——
+  //   必须管理员在 review 页审核通过后，才由小号写进仓库。
+  "r2_buckets": [
+    {
+      "binding": "SUBMIT_BUCKET",
+      "bucket_name": "nailong-submissions",
+      "preview_bucket_name": "nailong-submissions-preview"
+    },
+    {
+      "binding": "RATE_BUCKET",
+      "bucket_name": "nailong-rate",
+      "preview_bucket_name": "nailong-rate-preview"
+    }
+  ],
+
   // 绑到 submit 子域名。
   // custom_domain: true 让 Cloudflare 自动建 DNS 记录 + 证书，
   // 不用手工去 DNS 面板加 CNAME。
-  // 前提：xn--psszg58cydsdq780c.com 已经是 Cloudflare 上的 zone（主站迁 NS 时已经满足）。
+  // 前提：xn--psszg58cydsdq780c.com 已经是 Cloudflare 上的 zone。
   "routes": [
     {
       "pattern": "submit.xn--psszg58cydsdq780c.com",
@@ -31,28 +47,36 @@
     }
   ],
 
-  // 本地开发默认端口
-  "dev": {
-    "port": 8788
+  // ==========================================================================
+  // 明文变量（不是秘密，可以进 git）
+  // ==========================================================================
+  "vars": {
+    "GITHUB_CLIENT_ID": "Ov23lixg2nDUNSnqhIwn",
+
+    // Turnstile 的 site key 是公开的（前端要用）。
+    // 从 Cloudflare 后台 → Turnstile → 你的站点 → Widget 里拿。
+    "TURNSTILE_SITE_KEY": "",
+
+    // 同一个 IP 两次投稿的最小间隔（秒）。默认 30 分钟。
+    "RATE_LIMIT": "1800"
   },
 
   // ==========================================================================
-  // 环境变量
-  //
-  // GITHUB_CLIENT_ID 是**公开值** —— 它会出现在授权链接里
-  // （https://github.com/login/oauth/authorize?client_id=...），
-  // 任何人打开授权页都能看到。写在这里是为了每次部署自动带上，
-  // 不用手工去 Dashboard 配。
-  //
-  // ⚠️ GITHUB_CLIENT_SECRET 绝不能写在这里！
-  //    它一旦进 git 就等于公开，别人能拿它冒充这个应用。
-  //    用命令配，存进 Cloudflare 的加密存储：
-  //        npx wrangler secret put GITHUB_CLIENT_SECRET
-  //    或者在 Dashboard → Worker → Settings → Variables and Secrets 里
-  //    加一条，类型选 Secret。
+  // ⚠️ 秘密变量：用 wrangler secret put 配，不要写进这个文件
   // ==========================================================================
-  "vars": {
-    "GITHUB_CLIENT_ID": "Ov23lixg2nDUNSnqhIwn"
+  //   GITHUB_CLIENT_SECRET   OAuth Client Secret（也用作会话签名密钥）
+  //   ADMIN_LOGIN            允许进管理页的 GitHub 用户名，如 "Thomas455"
+  //   BOT_TOKEN              小号的 token —— 唯一会写仓库的凭据
+  //   TURNSTILE_SECRET       Turnstile 服务端密钥
+  //
+  //   npx wrangler secret put GITHUB_CLIENT_SECRET
+  //   npx wrangler secret put ADMIN_LOGIN
+  //   npx wrangler secret put BOT_TOKEN
+  //   npx wrangler secret put TURNSTILE_SECRET
+
+  // 本地开发默认端口
+  "dev": {
+    "port": 8788
   },
 
   "observability": {

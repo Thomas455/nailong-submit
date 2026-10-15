@@ -1,0 +1,135 @@
+/* ============================================================================
+   管理页样式（在投稿页的深色主题上加一层）
+   ============================================================================ */
+
+body.admin .wrap { max-width: 860px; }
+
+/* ---------- 顶部条 ---------- */
+.bar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 16px;
+  padding: 11px 14px; border-radius: 13px;
+  background: var(--card); border: 1px solid var(--line);
+}
+.bar #who { margin-right: auto; font-size: 13.5px; color: var(--muted); }
+.bar #who b { color: var(--go); }
+
+/* mini 按钮也用在 <a> 上，统一一下 */
+a.mini {
+  display: inline-flex; align-items: center; text-decoration: none;
+  padding: 5px 13px; border-radius: 999px;
+  background: rgba(254, 206, 14, .12); border: 1px solid var(--line);
+  color: var(--ink); font-size: 12.5px; font-weight: 700;
+  transition: background-color .2s, transform .2s;
+}
+a.mini:hover { background: var(--track); transform: translateY(-1px); }
+
+/* ---------- 空状态 ---------- */
+.empty {
+  padding: 42px 20px; border-radius: 18px; text-align: center;
+  background: var(--card); border: 1px dashed rgba(254, 206, 14, .22);
+}
+.empty b { display: block; font-size: 16px; margin-bottom: 6px; }
+.empty span { font-size: 13.5px; color: var(--muted); }
+
+/* ---------- 队列 ---------- */
+.queue { list-style: none; display: flex; flex-direction: column; gap: 11px; }
+
+.q-item {
+  padding: 15px 16px; border-radius: 15px; cursor: pointer;
+  background: var(--card); border: 1px solid var(--line);
+  transition: background-color .2s, transform .2s, border-color .2s;
+}
+.q-item:hover { background: var(--card-hi); transform: translateY(-2px); }
+
+.q-top { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
+.q-id {
+  padding: 3px 10px; border-radius: 7px;
+  background: var(--track); color: var(--ink);
+  font: 700 14px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  letter-spacing: .1em;
+}
+.q-college { font-size: 15.5px; font-weight: 700; }
+.q-count { margin-left: auto; font-size: 12.5px; color: var(--muted); }
+
+.q-note {
+  font-size: 13px; color: var(--muted); line-height: 1.7;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.q-time { margin-top: 7px; font-size: 11.5px; color: rgba(139, 147, 184, .7); }
+
+/* ---------- 抽屉 ---------- */
+.drawer { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; }
+.drawer[hidden] { display: none; }
+.drawer-bg { position: absolute; inset: 0; background: rgba(4, 6, 16, .78);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+
+.drawer-panel {
+  position: relative; z-index: 1;
+  width: min(680px, calc(100vw - 28px)); max-height: min(88vh, 860px);
+  overflow-y: auto; overscroll-behavior: contain;
+  padding: 24px 22px; border-radius: 20px;
+  background: var(--card); border: 1px solid var(--line);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .6);
+  animation: drawerIn .26s ease-out;
+}
+@keyframes drawerIn { from { opacity: 0; transform: translateY(14px) scale(.98); } }
+
+.drawer-close {
+  position: absolute; top: 12px; right: 12px;
+  width: 32px; height: 32px; border-radius: 50%; border: 0; cursor: pointer;
+  background: rgba(255, 255, 255, .1); color: var(--fg);
+  font-size: 22px; line-height: 1; display: grid; place-items: center;
+  transition: background-color .2s;
+}
+.drawer-close:hover { background: rgba(255, 107, 96, .3); }
+
+.drawer-panel h2 { font-size: 19px; margin-bottom: 14px; padding-right: 34px; }
+
+.d-meta {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px;
+}
+.d-chip {
+  padding: 4px 11px; border-radius: 999px;
+  background: #0d1224; border: 1px solid rgba(255, 255, 255, .08);
+  font-size: 12.5px; color: var(--muted);
+}
+.d-chip b { color: var(--fg); }
+
+.d-note {
+  padding: 11px 13px; border-radius: 11px; margin-bottom: 16px;
+  background: rgba(254, 206, 14, .08); border: 1px solid var(--line);
+  font-size: 13.5px; line-height: 1.75; color: var(--fg);
+  white-space: pre-wrap;
+}
+.d-note:empty { display: none; }
+
+.d-grid { display: grid; gap: 11px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.d-shot {
+  border-radius: 11px; overflow: hidden; background: #0a0e1c;
+  border: 1px solid rgba(255, 255, 255, .07);
+}
+.d-shot img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; }
+.d-shot figcaption {
+  padding: 6px 8px; font-size: 11.5px; color: var(--muted);
+  border-top: 1px solid rgba(255, 255, 255, .06);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 危险操作单独一种颜色，别和发布搞混 */
+.btn.primary.alt { background: #7ddc9a; }
+.btn.primary.alt:not(:disabled):hover { background: #9deab6; }
+
+.drawer-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0 14px; }
+.drawer-actions .btn { margin-top: 0; }
+
+@media (max-width: 560px) {
+  .modes { grid-template-columns: 1fr; }
+  .drawer-panel { padding: 20px 16px; }
+  .drawer-actions .btn { flex: 1 1 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer-panel { animation: none; }
+  .q-item, a.mini, .mini { transition: none; }
+}

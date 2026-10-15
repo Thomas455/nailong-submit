@@ -1,0 +1,9 @@
+{
+  "name": "nailong-submit-tests",
+  "private": true,
+  "type": "module",
+  "description": "投稿站服务端测试。跑的是 src/ 下的真实 Worker 源码。",
+  "scripts": {
+    "test": "node tools/test_worker.mjs"
+  }
+}
