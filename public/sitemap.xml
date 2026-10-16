@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  宇宙奶龙大学投稿站 · sitemap
+
+  这个站只有两个页面，而且都是**工具页**，不是内容页：
+    /       投稿表单
+    /admin  管理员审核后台
+
+  ⚠️ 只收了 / 一个。
+
+  为什么 /admin 不在里面：
+  它需要 GitHub 登录才能用，对搜索引擎和普通访客都没有价值，
+  页面上也写着 noindex, nofollow。把登录墙后面的页面塞进 sitemap
+  只会浪费抓取额度。
+
+  ⚠️ 地址写**不带 .html 的形式**：
+  本站 Cloudflare 会把 /index.html 307 跳到 /。
+  sitemap 里列跳转地址，搜索引擎会把页面当成重定向页，
+  白白浪费抓取额度 —— 列最终地址才对。
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.sitemaps.org/schemas/sitemap/0.9
+                            http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd">
+
+  <!-- 投稿页（唯一的公开页面） -->
+  <url>
+    <loc>https://submit.xn--psszg58cydsdq780c.com/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+
+</urlset>

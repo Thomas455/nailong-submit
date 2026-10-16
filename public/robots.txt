@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /
+
+# 管理后台是登录墙后面的工具页，对搜索引擎没价值。
+# 页面本身也写了 noindex, nofollow，这里再挡一道。
+Disallow: /admin
+Disallow: /admin.html
+
+# API 不用抓
+Disallow: /api/
+
+Sitemap: https://submit.xn--psszg58cydsdq780c.com/sitemap.xml
