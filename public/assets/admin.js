@@ -16,8 +16,7 @@
   var dTitle = $('dTitle'), dBody = $('dBody'), dMsg = $('dMsg'), adminNote = $('adminNote');
   var btnApprove = $('btnApprove'), btnReject = $('btnReject');
   // 待推送区
-  var stage = $('stage'), stageList = $('stageList'), stageMsg = $('stageMsg'),
-      stageBranch = $('stageBranch');
+  var stage = $('stage'), stageList = $('stageList'), stageMsg = $('stageMsg');
   // 小号绑定
   var botStatus = $('botStatus'), botBind = $('botBind'), botUnbind = $('botUnbind');
 
@@ -204,13 +203,25 @@
     return false;
   }
 
+  /* ============================================================
+     队列条目四种状态的显示文字
+     ============================================================ */
+  var STATE_TEXT = {
+    pending: '待审核',
+    approved: '已进 fork',
+    pushed: '已上线',
+    rejected: '已拒绝'
+  };
+
   function render(items) {
     queueEl.innerHTML = '';
     emptyEl.hidden = items.length > 0;
 
     items.forEach(function (it) {
+      var st = it.state || (it.pushed ? 'pushed' : (it.rejected ? 'rejected'
+                : (it.approved ? 'approved' : 'pending')));
       var li = document.createElement('li');
-      li.className = 'q-item' + (it.approved ? ' approved' : '');
+      li.className = 'q-item st-' + st;
       li.tabIndex = 0;
       li.setAttribute('role', 'button');
 
@@ -224,14 +235,13 @@
       top.querySelector('.q-college').textContent = it.collegeName;
       top.querySelector('.q-count').textContent =
         (it.files || []).length + ' 张';
-      // 已审核通过的打个标记
-      if (it.approved) {
-        var flag = document.createElement('span');
-        flag.className = 'q-flag';
-        flag.textContent = '已进 fork';
-        top.querySelector('.q-count').parentNode.insertBefore(flag,
-          top.querySelector('.q-count'));
-      }
+
+      // 状态标签。四种状态都要看得见 —— 以前只有「已进 fork」，
+      // 被拒绝的条目看起来和待审一模一样，管理员会重复处理。
+      var flag = document.createElement('span');
+      flag.className = 'q-flag';
+      flag.textContent = STATE_TEXT[st] || st;
+      top.insertBefore(flag, top.querySelector('.q-count'));
       li.appendChild(top);
 
       if (it.note) {
@@ -239,6 +249,25 @@
         n.className = 'q-note';
         n.textContent = it.note;
         li.appendChild(n);
+      }
+
+      // 被拒绝的，把原因直接显示出来，不用点进去
+      if (st === 'rejected' && it.rejected && it.rejected.adminNote) {
+        var why = document.createElement('div');
+        why.className = 'q-why';
+        why.textContent = '拒绝原因：' + it.rejected.adminNote;
+        li.appendChild(why);
+      }
+
+      // 已推送的，给个 PR 链接
+      if (st === 'pushed' && it.pushed && it.pushed.prUrl) {
+        var pr = document.createElement('a');
+        pr.className = 'q-pr';
+        pr.href = it.pushed.prUrl;
+        pr.target = '_blank';
+        pr.rel = 'noopener';
+        pr.textContent = '查看 PR #' + it.pushed.prNumber;
+        li.appendChild(pr);
       }
 
       var t = document.createElement('div');
@@ -394,25 +423,26 @@
         var items = j.items || [];
         stage.hidden = items.length === 0;
 
-        stageList.innerHTML = items.map(function (it) {
-          var when = fmtTime(it.at);
-          return '<li class="stage-item">' +
-            '<a href="https://github.com/' + esc(it.forkFull || '') +
-              '/tree/' + encodeURIComponent(it.branch) +
-              '" target="_blank" rel="noopener" class="stage-branch">' +
-              esc(it.branch) + '</a>' +
-            '<span class="stage-meta">' + esc(it.id) + ' · ' +
-              (it.files ? it.files.length : 0) + ' 张 · ' + when + '</span>' +
-            '</li>';
-        }).join('');
-
-        // 下拉框列出分支名，方便选
-        var sel = $('stageBranch');
-        var cur = sel.value;
-        sel.innerHTML = items.map(function (it) {
-          return '<option value="' + esc(it.branch) + '">' + esc(it.branch) + '</option>';
-        }).join('');
-        if (cur && items.some(function (i) { return i.branch === cur; })) sel.value = cur;
+        // 现在所有内容都在 fork 的 main 上，所以分支是固定的，不用让用户选。
+        var total = items.reduce(function (a, it) {
+          return a + ((it.files && it.files.length) || 0);
+        }, 0);
+        stageList.innerHTML =
+          '<li class="stage-item stage-summary">' +
+            '<b>' + items.length + '</b> 条投稿、共 <b>' + total + '</b> 件作品，' +
+            '都已在小号 fork 的 <code>main</code> 上' +
+          '</li>' +
+          items.slice(0, 20).map(function (it) {
+            return '<li class="stage-item">' +
+              '<span class="stage-branch">' + esc(it.collegeName || '') + '</span>' +
+              '<span class="stage-meta">' + esc(it.id) + ' · ' +
+                (it.files ? it.files.length : 0) + ' 张 · ' + fmtTime(it.at) + '</span>' +
+              '</li>';
+          }).join('') +
+          (items.length > 20
+            ? '<li class="stage-item"><span class="stage-meta">…还有 ' +
+              (items.length - 20) + ' 条</span></li>'
+            : '');
       })
       .catch(function (e) {
         stageMsg.innerHTML = '<span style="color:var(--warn)">读取待推列表失败：' +
@@ -421,16 +451,13 @@
   }
 
   $('btnPush').addEventListener('click', function () {
-    var branch = $('stageBranch').value;
-    if (!branch) { stageMsg.innerHTML = '先选一个分支'; return; }
-    if (!confirm('把 ' + branch + ' 推送到主仓库（建 PR）？')) return;
+    if (!confirm('把 fork 的 main 上所有已审核通过的内容推送到主仓库（建一个 PR）？')) return;
 
     var b = $('btnPush');
     b.disabled = true;
     stageMsg.textContent = '正在推送…';
 
     var fd = new FormData();
-    fd.append('branch', branch);
 
     fetch('/api/review/push', { method: 'POST', body: fd })
       .then(function (r) { return r.json(); })

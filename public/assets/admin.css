@@ -67,6 +67,35 @@ button.mini.ghost-mini:hover {
   background: var(--card); border: 1px solid var(--line);
 }
 
+/* ---------- 队列条目状态 ---------- */
+/* 四种状态一眼可辨。以前只有「已进 fork」一个标记，
+   被拒绝的条目看起来和待审一模一样，管理员会重复处理。 */
+.q-item.st-pending  { border-left: 3px solid rgba(254, 206, 14, .55); }
+.q-item.st-approved { border-left: 3px solid var(--ink); }
+.q-item.st-pushed   { border-left: 3px solid var(--go); opacity: .72; }
+.q-item.st-rejected { border-left: 3px solid var(--warn); opacity: .6; }
+
+.q-flag {
+  margin-left: auto; padding: 2px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; white-space: nowrap;
+  background: rgba(255, 255, 255, .08); color: var(--muted);
+}
+.q-item.st-pending  .q-flag { background: rgba(254, 206, 14, .16); color: var(--ink); }
+.q-item.st-approved .q-flag { background: rgba(254, 206, 14, .18); color: var(--ink); }
+.q-item.st-pushed   .q-flag { background: rgba(61, 220, 132, .16); color: var(--go); }
+.q-item.st-rejected .q-flag { background: rgba(255, 107, 96, .16); color: var(--warn); }
+
+.q-why {
+  margin-top: 7px; padding: 7px 10px; border-radius: 8px;
+  background: rgba(255, 107, 96, .1);
+  color: var(--warn); font-size: 12.5px; line-height: 1.6;
+}
+.q-pr {
+  display: inline-block; margin-top: 7px;
+  color: var(--go); font-size: 12.5px; font-weight: 600; text-decoration: none;
+}
+.q-pr:hover { text-decoration: underline; }
+
 /* ---------- 待推送区 ---------- */
 .stage-list { list-style: none; display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
 
@@ -75,32 +104,29 @@ button.mini.ghost-mini:hover {
   padding: 10px 13px; border-radius: 11px;
   background: #0d1224; border: 1px solid rgba(255, 255, 255, .06);
 }
+.stage-summary {
+  background: rgba(61, 220, 132, .08);
+  border-color: rgba(61, 220, 132, .25);
+  font-size: 13px; line-height: 1.7;
+}
+.stage-summary b { color: var(--go); }
+.stage-summary code {
+  padding: 1px 6px; border-radius: 5px;
+  background: var(--track); color: var(--ink); font-size: 12px;
+}
 .stage-branch {
-  font: 700 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  color: var(--ink); text-decoration: none;
+  font-size: 13.5px; font-weight: 700; color: var(--fg);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.stage-branch:hover { text-decoration: underline; }
 .stage-meta { margin-left: auto; font-size: 12px; color: var(--muted); }
 
-.stage-push { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
-.stage-push .field { flex: 1 1 240px; min-width: 0; }
+.stage-push { display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+.stage-push .note { margin: 0; }
+.stage-push code {
+  padding: 1px 6px; border-radius: 5px;
+  background: var(--track); color: var(--ink); font-size: 12.5px;
+}
 .stage-push .btn { margin-top: 0; }
-.stage-push select {
-  width: 100%; padding: 11px 12px; border-radius: 12px;
-  background: #0d1224; border: 1px solid var(--line); color: var(--fg);
-  font: inherit; font-size: 13px;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-}
-.stage-push select:focus { outline: none; border-color: var(--ink); }
-
-/* 已审核的条目打个标记 */
-.q-item.approved { opacity: .72; border-color: rgba(61, 220, 132, .3); }
-.q-flag {
-  margin-left: 8px; padding: 2px 8px; border-radius: 999px;
-  background: rgba(61, 220, 132, .16); color: var(--go);
-  font-size: 11px; font-weight: 700;
-}
 
 /* ---------- 队列 ---------- */
 .queue { list-style: none; display: flex; flex-direction: column; gap: 11px; }

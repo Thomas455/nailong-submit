@@ -105,9 +105,21 @@ async function listPending(request, env) {
           const m = JSON.parse(await meta.text());
           m.id = id;
 
-          // 顺带看看这条是不是已经审核通过过（写过 _approved.json）
-          const ap = await env.SUBMIT_BUCKET.get(`${id}/_approved.json`);
+          // 顺带看这条的状态：已审核通过 / 已拒绝 / 待审核
+          //
+          // ⚠️ 以前只读 _approved.json，导致**拒绝后的条目看起来和待审一模一样** ——
+          //    管理员会以为还没处理，又点一次拒绝。所以拒绝状态必须读出来。
+          const [ap, rj] = await Promise.all([
+            env.SUBMIT_BUCKET.get(`${id}/_approved.json`),
+            env.SUBMIT_BUCKET.get(`${id}/_rejected.json`)
+          ]);
           m.approved = ap ? JSON.parse(await ap.text()) : null;
+          m.rejected = rj ? JSON.parse(await rj.text()) : null;
+          // 已推到主仓库的（推送成功时写的）
+          const pj = await env.SUBMIT_BUCKET.get(`${id}/_pushed.json`);
+          m.pushed = pj ? JSON.parse(await pj.text()) : null;
+          // 一个统一的状态字段，前端直接用
+          m.state = m.pushed ? 'pushed' : (m.rejected ? 'rejected' : (m.approved ? 'approved' : 'pending'));
 
           out.push(m);
         } catch (e) {
@@ -208,19 +220,32 @@ async function approve(request, env) {
   }
 }
 
-/* ---- 把作品写进小号的 fork ---- */
+/* ---- 把作品写进小号的 fork（直接写 main，不建分支）----
+ *
+ * 为什么不再建 guest/xxx 分支：
+ * 原来每条投稿开一个分支，推送时逐个提 PR —— 分支一多就乱，而且
+ * 手动调整（改名/删图/调顺序）必须先进那个分支，改完才能推。
+ *
+ * 现在直接提交到 fork 的 main，于是：
+ *   · 所有已审核通过的内容都堆在 fork 的 main 上（一个地方，看得全）
+ *   · 「推送」= fork 的 main → 主仓库的 main，一个 PR 解决全部
+ *   · 想调整直接在 GitHub 网页上改 main 就行，不用挑分支
+ *
+ * 代价：并发审核时可能撞（两条投稿同时写同一个 list.txt）。
+ * 对策见下面的 recoverFromConflict —— 撞了就强制同步，然后
+ * 把所有「已审核通过但没推送」的重新提交一遍。
+ */
 async function pushToFork(m, env, { admin, adminNote }) {
   const token = await botToken(env);
   const fork = await forkRepo(env);
-  const branch = 'guest/' + stamp() + '-' + m.id.toLowerCase();
   const dir = `${WORKS_DIR}/${m.collegeDir}`;
 
   // 0. ★ 先把 fork 同步到主仓库最新
   //
   // 不做这一步会有个**静默的破坏**：updateList 读的是 fork 上的 list.txt，
-  // fork 一旦落后于主仓库（你自己之前合并过几次，fork 是那时候 fork 的），
-  // 它就会基于旧版本追加新作品 —— PR 的 diff 里会出现**删除别人的行**，
-  // 你一合并就把别人已发布的作品撤掉了，而且不会报任何错。
+  // fork 一旦落后于主仓库，它就会基于旧版本追加新作品 ——
+  // PR 的 diff 里会出现**删除别人的行**，一合并就把别人已发布的作品撤了，
+  // 而且不会报任何错。
   const synced = await syncFork(token, fork);
   if (!synced) {
     console.warn('pushToFork: fork 同步未成功，继续用现有版本（可能产生多余差异）');
@@ -231,12 +256,7 @@ async function pushToFork(m, env, { admin, adminNote }) {
     `/repos/${fork.owner}/${fork.repo}/git/ref/heads/${REPO.branch}`);
   const baseSha = ref.object.sha;
 
-  // 2. 建分支（写在 fork 上 —— token 对自己的 fork 有权限）
-  await gh(token, 'POST', `/repos/${fork.owner}/${fork.repo}/git/refs`, {
-    ref: `refs/heads/${branch}`, sha: baseSha
-  });
-
-  // 3. 传图
+  // 2. 传图 + 更新 list.txt，都落在 main 上
   const uploaded = [];
   for (const f of m.files) {
     const obj = await env.SUBMIT_BUCKET.get(`${m.id}/${f.name}`);
@@ -246,20 +266,20 @@ async function pushToFork(m, env, { admin, adminNote }) {
       `/repos/${fork.owner}/${fork.repo}/contents/${enc(dir + '/' + f.name)}`, {
         message: `guest submission: ${f.name}`,
         content: b64(bytes),
-        branch
+        branch: REPO.branch              // ← 直接写 main
       });
     uploaded.push(f.name);
   }
 
-  // 4. 更新 list.txt（追加到末尾 = 显示在最上面）
-  await updateList(token, fork, dir, uploaded, branch);
+  // 3. 更新 list.txt（追加到末尾 = 显示在最上面）
+  await updateList(token, fork, dir, uploaded, REPO.branch);
 
   return {
-    branch,
+    branch: REPO.branch,                 // 永远是 main
     files: uploaded,
     forkFull: `${fork.owner}/${fork.repo}`,
     // 点进去就能看到，方便你手动调整
-    forkUrl: `https://github.com/${fork.owner}/${fork.repo}/tree/${encodeURIComponent(branch)}`
+    forkUrl: `https://github.com/${fork.owner}/${fork.repo}/tree/${REPO.branch}`
   };
 }
 
@@ -337,35 +357,22 @@ async function push(request, env) {
   if (!admin) return unauthorized();
   if (!env.SUBMIT_BUCKET) return json({ ok: false, error: '未配置存储' }, 503);
 
-  let form;
-  try { form = await request.formData(); } catch (e) {
-    return json({ ok: false, error: '请求不对' }, 400);
-  }
-  const branch = String(form.get('branch') || '').trim();
-
-  // 只允许 guest/ 开头的分支名 —— 不让前端随便传分支名来推东西
-  if (!/^guest\/[a-zA-Z0-9._-]+$/.test(branch)) {
-    return json({ ok: false, error: '分支名不对（应该像 guest/20260101-abc123）' }, 400);
-  }
-
   const fork = await forkRepo(env);
   const token = await botToken(env);
 
-  // 这个分支得真的存在
-  let head;
+  // fork 的 main 得存在
   try {
-    head = await gh(token, 'GET', `/repos/${fork.owner}/${fork.repo}/git/ref/heads/${branch}`);
+    await gh(token, 'GET', `/repos/${fork.owner}/${fork.repo}/git/ref/heads/${REPO.branch}`);
   } catch (e) {
-    return json({ ok: false, error: 'fork 上找不到分支 ' + branch + '\n' + e.message }, 400);
+    return json({ ok: false, error: 'fork 上没有 main 分支：' + e.message }, 400);
   }
 
-  // 和主仓库的 main 比一下，看看这个分支改了什么
+  // 和主仓库 main 比一下，看看 fork 上有什么改动
   let compare = null;
   try {
     compare = await gh(token, 'GET',
-      `/repos/${REPO.owner}/${REPO.repo}/compare/${REPO.branch}...${fork.owner}:${branch}`);
+      `/repos/${REPO.owner}/${REPO.repo}/compare/${REPO.branch}...${fork.owner}:${REPO.branch}`);
   } catch (e) {
-    // compare 失败不致命，接着试着建 PR（GitHub 自己会判断有没有差异）
     console.error('push: compare 失败', e && e.message);
   }
 
@@ -374,57 +381,204 @@ async function push(request, env) {
   const filesChanged = (compare && compare.files && compare.files.length) || 0;
 
   if (compare && commits === 0) {
-    return json({ ok: false, error: '这个分支相对主仓库没有改动，可能已经合并过了。' }, 400);
+    return json({ ok: false, error: 'fork 的 main 相对主仓库没有改动，可能已经合并过了。' }, 400);
   }
 
-  const title = String(form.get('title') || '').trim()
-    || `[游客投稿] ${colleges.length ? colleges.join('、') : '作品更新'}（${commits} 次提交）`;
+  const title = `[游客投稿] ${colleges.length ? colleges.join('、') : '作品更新'}（${commits} 次提交）`;
 
-  const pr = await gh(token, 'POST', `/repos/${REPO.owner}/${REPO.repo}/pulls`, {
-    title,
-    body: buildPushPRBody(compare, colleges, branch, fork),
-    head: `${fork.owner}:${branch}`,      // 跨 fork 提 PR 的写法
-    base: REPO.branch
-  });
+  let pr;
+  try {
+    pr = await gh(token, 'POST', `/repos/${REPO.owner}/${REPO.repo}/pulls`, {
+      title,
+      body: buildPushPRBody(compare, colleges, REPO.branch, fork),
+      head: `${fork.owner}:${REPO.branch}`,   // fork 的 main → 主仓库的 main
+      base: REPO.branch
+    });
+  } catch (e) {
+    // ---- 冲突恢复 ----
+    //
+    // 什么情况会走到这：你在 GitHub 网页上手动往主仓库推过东西，
+    // 此时 fork 的 main 和主仓库的 main 产生了分叉，直接提 PR 会 409。
+    //
+    // 处理：强制同步（把 fork 硬重置到主仓库最新），
+    // 然后把所有「已审核通过但还没推送」的重新提交一遍，最后再推。
+    if (e.status !== 409 && e.status !== 422) throw e;
 
-  // 把「这条投稿已推成 PR」记下来，投稿人查编号时能看到链接
-  await markPushed(env, branch, { prUrl: pr.html_url, prNumber: pr.number });
+    console.warn('push: 建 PR 冲突，开始恢复：强制同步 + 重扫已审核未推送的内容');
+
+    const rec = await recoverFromConflict(env, { token, fork, admin });
+    if (!rec.ok) return json({ ok: false, error: rec.error }, 409);
+
+    // 恢复完之后再建一次 PR
+    const c2 = await gh(token, 'GET',
+      `/repos/${REPO.owner}/${REPO.repo}/compare/${REPO.branch}...${fork.owner}:${REPO.branch}`);
+    const commits2 = (c2 && c2.total_commits) || 0;
+    if (!commits2) {
+      return json({ ok: false, error: '恢复完成，但 fork 相对主仓库已无差异（可能内容都已上线）。' }, 400);
+    }
+
+    pr = await gh(token, 'POST', `/repos/${REPO.owner}/${REPO.repo}/pulls`, {
+      title: `[游客投稿] ${rec.colleges.length ? rec.colleges.join('、') : '作品更新'}（${commits2} 次提交）`,
+      body: buildPushPRBody(c2, rec.colleges, REPO.branch, fork)
+        + `\n\n> ⚠️ 本次推送前发生过冲突，已强制同步并重新提交了 ${rec.replayed} 条待推内容。`,
+      head: `${fork.owner}:${REPO.branch}`,
+      base: REPO.branch
+    });
+  }
+
+  // 这次 PR 涵盖的所有「已审核通过但没推送」的投稿，都标记成已推送
+  await markPushed(env, { prUrl: pr.html_url, prNumber: pr.number });
 
   return json({
     ok: true,
     prUrl: pr.html_url,
     prNumber: pr.number,
-    branch,
+    branch: REPO.branch,
     commits,
     filesChanged,
     colleges
   });
 }
 
-// 把这个分支上的所有投稿标记为「已推送」
-async function markPushed(env, branch, res) {
+/* ============================================================
+   冲突恢复：强制同步 + 重扫已审核未推送的内容
+
+   步骤（按你说的顺序）：
+     1. 强制把 fork 的 main 对齐到主仓库 main（丢掉分叉）
+     2. 扫描所有「已审核通过、但没有 _pushed.json」的投稿
+     3. 把它们重新提交到 fork 的 main
+     4. 之后再推 PR
+
+   为什么第 1 步要「强制」：merge-upstream 遇到冲突会失败（409），
+   而我们要的是「以主仓库为准，fork 重新开始」。所以用 update-ref
+   把 fork 的 main 直接指到主仓库的 main（force=true）。
+   ⚠️ 这会丢掉 fork 上「尚未推送」的改动 —— 所以必须先做第 2/3 步，
+      而第 3 步的源数据在 R2 里（不是 fork 上），所以强制同步不会丢内容。
+   ============================================================ */
+async function recoverFromConflict(env, { token, fork, admin }) {
+  // 1. 强制同步：fork:main ← 主仓库:main
+  let mainRef;
   try {
-    const page = await env.SUBMIT_BUCKET.list({ prefix: '', cursor: undefined });
-    for (const obj of ((page && page.objects) || [])) {
-      const key = (obj && obj.key) || '';
-      const m = /^([0-9A-Z]{6})\/_approved\.json$/.exec(key);
-      if (!m) continue;
-      try {
-        const r = await env.SUBMIT_BUCKET.get(key);
-        if (!r) continue;
-        const a = JSON.parse(await r.text());
-        if (a.branch !== branch) continue;      // 只标记同一个分支上的
-        await env.SUBMIT_BUCKET.put(`${m[1]}/_pushed.json`, JSON.stringify({
-          at: Date.now(), ...res
-        }), { httpMetadata: { contentType: 'application/json' } });
-      } catch (e) { /* 坏数据跳过 */ }
-    }
+    mainRef = await gh(token, 'GET',
+      `/repos/${REPO.owner}/${REPO.repo}/git/ref/heads/${REPO.branch}`);
   } catch (e) {
-    console.error('markPushed 失败', e && e.message);
+    return { ok: false, error: '读主仓库 main 失败：' + e.message };
   }
+  const mainSha = mainRef.object.sha;
+
+  try {
+    await gh(token, 'PATCH',
+      `/repos/${fork.owner}/${fork.repo}/git/refs/heads/${REPO.branch}`, {
+        sha: mainSha,
+        force: true              // ← 强制，丢掉分叉
+      });
+  } catch (e) {
+    return { ok: false, error: '强制同步 fork 失败：' + e.message };
+  }
+  console.log('recover: fork main 已强制对齐到主仓库', mainSha.slice(0, 8));
+
+  // 2. 扫描「已审核通过但没推送」的投稿
+  const pending = await approvedNotPushed(env);
+  if (!pending.length) {
+    return { ok: true, replayed: 0, colleges: [] };
+  }
+
+  // 3. 逐条重新提交到 fork 的 main
+  const colleges = new Set();
+  let replayed = 0;
+
+  for (const item of pending) {
+    const dir = `${WORKS_DIR}/${item.collegeDir}`;
+    const uploaded = [];
+    let failed = null;
+
+    for (const f of item.files || []) {
+      const obj = await env.SUBMIT_BUCKET.get(`${item.id}/${f.name}`);
+      if (!obj) { failed = `R2 里找不到 ${item.id}/${f.name}`; break; }
+      const bytes = new Uint8Array(await obj.arrayBuffer());
+      try {
+        await gh(token, 'PUT',
+          `/repos/${fork.owner}/${fork.repo}/contents/${enc(dir + '/' + f.name)}`, {
+            message: `replay after conflict: ${f.name}`,
+            content: b64(bytes),
+            branch: REPO.branch
+          });
+        uploaded.push(f.name);
+      } catch (e) { failed = e.message; break; }
+    }
+
+    if (failed) {
+      console.error('recover: 重放', item.id, '失败', failed);
+      continue;
+    }
+
+    try {
+      await updateList(token, fork, dir, uploaded, REPO.branch);
+    } catch (e) {
+      console.error('recover: 重放', item.id, '的 list.txt 失败', e.message);
+      continue;
+    }
+
+    colleges.add(item.collegeName);
+    replayed++;
+  }
+
+  return { ok: true, replayed, colleges: [...colleges] };
 }
 
-/* ---- 已审核但还没推的分支 ---- */
+// 列出「已审核通过、但还没推送」的投稿
+async function approvedNotPushed(env) {
+  const out = [];
+  const seen = new Set();
+  let cursor;
+
+  try {
+    do {
+      const page = await env.SUBMIT_BUCKET.list({ prefix: '', cursor });
+      for (const obj of ((page && page.objects) || [])) {
+        const key = (obj && obj.key) || '';
+        const m = /^([0-9A-Z]{6})\/_approved\.json$/.exec(key);
+        if (!m || seen.has(m[1])) continue;
+        seen.add(m[1]);
+
+        const id = m[1];
+        // 推过的、拒绝过的，都不算
+        if (await env.SUBMIT_BUCKET.get(`${id}/_pushed.json`)) continue;
+        if (await env.SUBMIT_BUCKET.get(`${id}/_rejected.json`)) continue;
+
+        const meta = await env.SUBMIT_BUCKET.get(`${id}/_meta.json`);
+        if (!meta) continue;
+        const mm = JSON.parse(await meta.text());
+        out.push({ ...mm, id });
+      }
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+  } catch (e) {
+    console.error('approvedNotPushed 失败', e && e.message);
+  }
+
+  return out;
+}
+
+// 把「已审核通过、但还没推送」的投稿全部标记为「已推送」
+//
+// 以前按 branch 匹配（每个投稿一个分支），现在所有内容都在 fork 的 main 上，
+// 一个 PR 就全推走了 —— 所以改成「凡是还没标记过的都标记」。
+async function markPushed(env, res) {
+  const items = await approvedNotPushed(env);
+  let n = 0;
+  for (const it of items) {
+    try {
+      await env.SUBMIT_BUCKET.put(`${it.id}/_pushed.json`, JSON.stringify({
+        at: Date.now(), ...res
+      }), { httpMetadata: { contentType: 'application/json' } });
+      n++;
+    } catch (e) { /* 单条失败不影响其他 */ }
+  }
+  console.log('markPushed: 标记了', n, '条');
+}
+
+/* ---- 已审核通过、但还没推送到主仓库的投稿 ---- */
 async function pendingBranches(request, env) {
   if (!(await requireAdmin(request, env))) return unauthorized();
   if (!env.SUBMIT_BUCKET) return json({ ok: false, error: '未配置存储' }, 503);
@@ -436,6 +590,8 @@ async function pendingBranches(request, env) {
       const key = (obj && obj.key) || '';
       const m = /^([0-9A-Z]{6})\/_approved\.json$/.exec(key);
       if (!m) continue;
+      // 推过的不用再列
+      if (await env.SUBMIT_BUCKET.get(`${m[1]}/_pushed.json`)) continue;
       try {
         const r = await env.SUBMIT_BUCKET.get(key);
         if (r) out.push({ id: m[1], ...JSON.parse(await r.text()) });
@@ -512,6 +668,11 @@ async function reject(request, env) {
   await env.SUBMIT_BUCKET.put(`${id}/_rejected.json`, JSON.stringify({
     at: Date.now(), adminNote
   }), { httpMetadata: { contentType: 'application/json' } });
+
+  // 拒绝 = 撤回之前的审核通过。
+  // 不清掉的话状态会变成「既通过又拒绝」，而推送时只认 approved —— 会出现
+  // 「列表显示已拒绝，但内容照样被推上去」这种不对账的情况。
+  await env.SUBMIT_BUCKET.delete(`${id}/_approved.json`);
 
   return json({ ok: true });
 }

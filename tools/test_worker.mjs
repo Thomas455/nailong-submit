@@ -58,6 +58,11 @@ globalThis.fetch = async (input, init) => {
       return new Response(JSON.stringify({ message: "Not Found" }), { status: 404, headers: H });
     if (method === "POST" && p.endsWith("/git/refs"))
       return new Response(JSON.stringify({ ok: true }), { headers: H });
+    // PATCH git/refs：冲突恢复时强制对齐 fork 的 main 用
+    if (method === "PATCH" && p.includes("/git/refs")) {
+      return new Response(JSON.stringify({ ref: "refs/heads/main", object: { sha: "a".repeat(40) } }),
+        { headers: H });
+    }
     if (method === "PUT" && p.includes("/contents/"))
       return new Response(JSON.stringify({ ok: true }), { headers: H });
     // merge-upstream：approve 之前同步 fork 用它（缺了会导致 list.txt 基于旧版本，
@@ -357,19 +362,24 @@ fdApprove.append("id", ID);
 fdApprove.append("note", "内容没问题");
 r = await call(W, "/api/review/approve", { method: "POST", headers: { Cookie: cookie }, body: fdApprove });
 ok("审核通过（写进小号 fork）", r.status === 200 && r.json && r.json.ok === true, r.text.slice(0, 300));
-const BRANCH = r.json && r.json.branch;
 
 const w = ghCalls.filter(c => c.t === "gh" && (c.method === "POST" || c.method === "PUT"));
-// 同步必须发生在**建分支之前** —— 否则 list.txt 会基于旧版本，PR 里会删掉别人的行
+// 同步必须发生在**写文件之前** —— 否则 list.txt 会基于旧版本，PR 里会删掉别人的行
 const syncIdx = ghCalls.findIndex(c => c.url.includes("/merge-upstream"));
-const branchIdx = ghCalls.findIndex(c => c.url.includes("/git/refs"));
-ok("  先同步 fork 再建分支",
-  syncIdx >= 0 && branchIdx >= 0 && syncIdx < branchIdx,
-  "sync@" + syncIdx + " branch@" + branchIdx);
+const firstWrite = ghCalls.findIndex(c => c.method === "PUT" && c.url.includes("/contents/"));
+ok("  先同步 fork 再写文件",
+  syncIdx >= 0 && firstWrite >= 0 && syncIdx < firstWrite,
+  "sync@" + syncIdx + " firstWrite@" + firstWrite);
 ok("  写进的是 fork（URL 里是小号 boringtip）",
   w.length > 0 && w.every(c => c.url.indexOf("/repos/boringtip/") === 0),
   JSON.stringify(w.map(c => c.url.slice(0, 70))));
-ok("  建了分支", w.some(c => c.url.includes("/git/refs")));
+// 新模型：不再建分支，直接提交到 fork 的 main
+ok("  没有新建 guest 分支", !ghCalls.some(c => c.url.includes("/git/refs")),
+  JSON.stringify(ghCalls.filter(c => c.url.includes("/git/refs")).map(c => c.url)));
+ok("  文件写在 main 上",
+  w.some(c => c.method === "PUT" && /[?&]branch=main/.test(c.url) || String(c.body || "").indexOf('"branch":"main"') >= 0) ||
+  ghCalls.some(c => c.method === "PUT" && c.body && String(c.body).indexOf('"branch":"main"') >= 0),
+  "检查 PUT 的 body 里 branch 是不是 main");
 ok("  传了 2 张图",
   w.filter(c => c.method === "PUT" && c.url.includes("/contents/") &&
     c.url.indexOf("list.txt") === -1).length === 2);
@@ -378,40 +388,35 @@ ok("  还没建 PR（那是「推送」那一步）", !w.some(c => c.url.endsWit
 ok("  每次请求都带 User-Agent",
   w.length > 0 && w.every(c => c.userAgent && String(c.userAgent).length > 0),
   JSON.stringify(w.map(c => c.userAgent)));
-ok("  返回了 fork 分支链接", Boolean(r.json && r.json.forkUrl));
+ok("  返回了 fork 链接（main）", Boolean(r.json && r.json.forkUrl));
+ok("  返回的分支就是 main", r.json && r.json.branch === "main", r.json && r.json.branch);
 
 r = await call(W, "/api/review/pending-branches", { headers: { Cookie: cookie } });
-ok("待推送列表里有这个分支",
-  r.json && (r.json.items || []).some(x => x.branch === BRANCH),
+ok("待推送列表里有这条",
+  r.json && (r.json.items || []).some(x => x.id === ID),
   JSON.stringify(r.json && r.json.items));
 
-// ---- 推送 = 以 PR 形式提到主仓库 ----
+// ---- 推送 = fork 的 main → 主仓库 main ----
 ghCalls.length = 0;
-const fdPush = new FormData();
-fdPush.append("branch", BRANCH);
-r = await call(W, "/api/review/push", { method: "POST", headers: { Cookie: cookie }, body: fdPush });
+r = await call(W, "/api/review/push", { method: "POST", headers: { Cookie: cookie }, body: new FormData() });
 ok("推送建 PR 成功", r.status === 200 && r.json && r.json.ok === true, r.text.slice(0, 300));
 
 const pw = ghCalls.filter(c => c.t === "gh");
-ok("  比对了分支差异", pw.some(c => c.url.includes("/compare/")));
+ok("  比对了差异", pw.some(c => c.url.includes("/compare/")));
 const prCall = pw.find(c => c.url.endsWith("/pulls"));
 ok("  建了 PR（提到主仓库）",
   Boolean(prCall) && prCall.url.indexOf("/repos/Thomas455/") >= 0,
   prCall && prCall.url);
-ok("  PR 用 fork 的分支当 head",
-  prCall && String(prCall.body || "").indexOf("boringtip:guest/") >= 0,
-  prCall && String(prCall.body || "").slice(0, 160));
+ok("  PR 的 head 是 fork 的 main（boringtip:main）",
+  prCall && String(prCall.body || "").indexOf('"head":"boringtip:main"') >= 0,
+  prCall && String(prCall.body || "").slice(0, 200));
+ok("  PR 的 base 是主仓库 main",
+  prCall && String(prCall.body || "").indexOf('"base":"main"') >= 0);
 ok("  带上了 PR 链接", r.json && typeof r.json.prUrl === "string");
 ok("  带上了改动统计", r.json && r.json.commits >= 0 && r.json.filesChanged >= 0,
   JSON.stringify({ c: r.json && r.json.commits, f: r.json && r.json.filesChanged }));
 ok("  识别出涉及的学院", r.json && (r.json.colleges || []).length > 0,
   JSON.stringify(r.json && r.json.colleges));
-
-// 分支名校验：不能传任意分支来推
-const fdBad = new FormData();
-fdBad.append("branch", "main");
-r = await call(W, "/api/review/push", { method: "POST", headers: { Cookie: cookie }, body: fdBad });
-ok("  拒绝非 guest/ 分支", r.status === 400, "got " + r.status);
 
 // 投稿人能查到
 r = await call(W, "/api/guest/status?id=" + ID);
@@ -444,6 +449,17 @@ ok("  拒绝不调 GitHub", ghCalls.filter(c => c.t === "gh").length === 0);
 r = await call(X, "/api/guest/status?id=" + ID2);
 ok("  投稿人看到 rejected", r.json && r.json.status === "rejected", JSON.stringify(r.json));
 ok("  投稿人看到拒绝原因", r.json && /不合适/.test(r.json.note || ""));
+
+// ---- 拒绝后管理页要能看出来（回归测试）----
+r = await call(X, "/api/review/list", { headers: { Cookie: cookie } });
+const rejectedItem = (r.json && r.json.items || []).find(x => x.id === ID2);
+ok("拒绝后仍留在管理页列表里", Boolean(rejectedItem));
+ok("  状态标成 rejected（以前只读 _approved，拒绝的看起来和待审一样）",
+  rejectedItem && rejectedItem.state === "rejected", rejectedItem && rejectedItem.state);
+ok("  rejected 字段有内容", rejectedItem && rejectedItem.rejected &&
+  typeof rejectedItem.rejected.at === "number", JSON.stringify(rejectedItem && rejectedItem.rejected));
+ok("  approved 已被清掉（拒绝=撤回通过）",
+  rejectedItem && !rejectedItem.approved, JSON.stringify(rejectedItem && rejectedItem.approved));
 
 /* ===== 7. 没绑小号 / 没配存储时的行为 ===== */
 

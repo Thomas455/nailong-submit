@@ -72,15 +72,15 @@
       <button class="mini" id="reloadStage" type="button">刷新</button>
     </div>
     <p class="note">
-      「审核通过」只是把作品写进了小号的 fork。你可以点进去改名、删图、调顺序，
-      改满意了再在这里一次性推成 PR。
+      「审核通过」只是把作品写进小号的 fork。你可以随时去 GitHub 上改名、删图、调顺序，
+      攒够了在这里一次性推成一个 PR。
     </p>
     <ul class="stage-list" id="stageList"></ul>
     <div class="stage-push">
-      <label class="field" style="flex:1">
-        <span>要推送的分支</span>
-        <select id="stageBranch"></select>
-      </label>
+      <p class="note">
+        「审核通过」的内容会直接提交到小号 fork 的 <code>main</code> 分支，
+        想改名、删图、调顺序直接在 GitHub 网页上改那个 <code>main</code> 就行。
+      </p>
       <button class="btn primary" id="btnPush" type="button">推送到主仓库（建 PR）</button>
     </div>
     <p class="note small" id="stageMsg"></p>
