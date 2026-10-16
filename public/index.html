@@ -145,7 +145,12 @@ var _hmt = _hmt || [];
     <div id="guestBits" hidden>
       <div class="ts-wrap">
         <div class="field-label">完成人机验证</div>
+        <!-- 容器从一开始就在 DOM 里，而且**永远不要被 innerHTML 覆盖**。
+             Turnstile 要求 render() 时容器已挂载；之前代码用
+             guestBits.innerHTML='加载中…' 把这里整个换掉了，
+             导致 render('#turnstile') 找不到容器、静默失败（不报错也不显示）。 -->
         <div id="turnstile" class="ts"></div>
+        <p class="note" id="tsStatus" style="margin-top:10px"></p>
       </div>
     </div>
 
