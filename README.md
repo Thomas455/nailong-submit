@@ -56,8 +56,19 @@
         ↓
 你打开 submit.宇宙奶龙大学.com/admin.html 用 GitHub 登录
         ↓ 看到待审列表，预览每张图
-        ↓ 点「发布」→ Worker 用小号 token：
-           建分支 → 从 R2 取图写进 works/ → 更新 list.txt → 建 PR
+        ↓
+   ┌─ 【审核通过】─────────────────────────────────────┐
+   │  Worker 用小号 token 把作品写进**小号自己的 fork**：│
+   │    建分支 → 从 R2 取图写进 works/ → 更新 list.txt │
+   │  不动主仓库，也不建 PR                             │
+   └──────────────────────────────────────────────────┘
+        ↓ 给你一个分支链接（小号 fork 上的 guest/… 分支）
+        ↓
+   你可以随意手动调整：改名、删图、调 list.txt 里的顺序…
+        ↓
+   ┌─ 【推送】─────────────────────────────────────────┐
+   │  把 fork 上攒好的**所有**改动，合并成一个 PR 提给主仓库 │
+   └──────────────────────────────────────────────────┘
         ↓
 你合并 PR → Cloudflare 部署 → 作品上线
 ```
@@ -122,13 +133,34 @@ GitHub → Settings → Developer settings → **OAuth Apps** → New OAuth App
 > ⚠️ callback URL 必须**完全一致**（含协议、子域名、路径），差一个字符 GitHub 就会拒绝。
 > 本地开发时再加一个 `http://127.0.0.1:8788/api/admin/callback` 也可以。
 
+### 为什么审核流程是「先 fork 再 PR」
+
+小号不是主仓库的成员（对它 `push = false`），而 GitHub 明确规定：
+
+> Using fine-grained personal access token to contribute to public repos
+> where the user is not a member.
+
+也就是说 **token 没法直接往主仓库写**。但它对**自己拥有的 fork** 有完整写权限 ——
+这就是绕开该限制的办法，也是为什么审核分成了两步：
+
+| 步骤 | 写到哪 | 效果 |
+| --- | --- | --- |
+| 审核通过 | 小号的 fork | 你可以自由手动调整 |
+| 推送 | 主仓库（建 PR） | 一次提交多批作品 |
+
+好处是攒批次：审核通过五条，去 GitHub 上改改，攒够了再一次性推一个 PR，
+比每条投稿开一个 PR 省事得多。
+
+> 如果你把仓库改成私有并把小号加成 collaborator，就不用绕这一圈了 ——
+> 但公开仓库 + fork 更简单，也更安全（小号权限更小）。
 ### 2. 建小号（只有游客投稿需要）
 
 游客投稿是用一个**小号**把内容发进主仓库的。这个小号需要：
 
 1. 注册一个独立的 GitHub 账号（**不要用你的主账号** —— 主账号有仓库所有权，
    万一 token 泄露后果太大）
-2. 给它一个 **Fine-grained personal access token**：
+2. **先 fork 主仓库**（Fork 按钮）。这一步是必须的 —— 小号不是主仓库成员，token 没法直接往主仓库写；但它对自己的 fork 有完整写权限。
+3. 给它一个 **Fine-grained personal access token**：
    - Resource owner：小号自己
    - Repository access：Only select repositories → 选 `nailong-university`
    - Permissions → **Contents: Read and write**、**Pull requests: Read and write**
@@ -234,7 +266,7 @@ npx wrangler dev
 - 所有人共用一个小号，API 限额挤在一起，而且**查不出是谁投的**
 - 一旦 Worker 出了什么漏洞把 token 泄露出去，别人能用它往你**所有公开仓库**写东西
 
-加了审核队列之后：仓库里只进你看过的东西；小号 token 只在你点「发布」时才用一次。
+加了审核队列之后：仓库里只进你看过的东西；小号 token 只在你点「审核通过」/「推送」时才用。
 
 ### 安全上做了什么（游客投稿是全网开放的，值得写清楚）
 

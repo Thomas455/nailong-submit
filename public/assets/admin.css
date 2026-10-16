@@ -46,6 +46,41 @@ a.mini:hover { background: var(--track); transform: translateY(-1px); }
   background: var(--card); border: 1px solid var(--line);
 }
 
+/* ---------- 待推送区 ---------- */
+.stage-list { list-style: none; display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+
+.stage-item {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 13px; border-radius: 11px;
+  background: #0d1224; border: 1px solid rgba(255, 255, 255, .06);
+}
+.stage-branch {
+  font: 700 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: var(--ink); text-decoration: none;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.stage-branch:hover { text-decoration: underline; }
+.stage-meta { margin-left: auto; font-size: 12px; color: var(--muted); }
+
+.stage-push { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.stage-push .field { flex: 1 1 240px; min-width: 0; }
+.stage-push .btn { margin-top: 0; }
+.stage-push select {
+  width: 100%; padding: 11px 12px; border-radius: 12px;
+  background: #0d1224; border: 1px solid var(--line); color: var(--fg);
+  font: inherit; font-size: 13px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.stage-push select:focus { outline: none; border-color: var(--ink); }
+
+/* 已审核的条目打个标记 */
+.q-item.approved { opacity: .72; border-color: rgba(61, 220, 132, .3); }
+.q-flag {
+  margin-left: 8px; padding: 2px 8px; border-radius: 999px;
+  background: rgba(61, 220, 132, .16); color: var(--go);
+  font-size: 11px; font-weight: 700;
+}
+
 /* ---------- 队列 ---------- */
 .queue { list-style: none; display: flex; flex-direction: column; gap: 11px; }
 

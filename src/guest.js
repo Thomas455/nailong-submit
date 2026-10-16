@@ -178,30 +178,48 @@ async function handleGuestSubmit(request, env) {
 }
 
 /* ============================================================
-   投稿状态查询（访客拿编号查自己那条有没有被发布/拒绝）
+   投稿状态查询（访客拿编号查自己那条的进展）
+
+   状态流转：
+     unknown  →  没这个编号
+     pending  →  在队列里，等你审核
+     approved →  你审核通过了，已写进小号的 fork（还没提到主仓库）
+     rejected →  没通过
+     pushed   →  已经以 PR 的形式提交到主仓库（给 PR 链接）
    ============================================================ */
 async function handleGuestStatus(url, env) {
   if (!env.SUBMIT_BUCKET) return json({ ok: false, error: '未配置' }, 503);
   const id = String(url.searchParams.get('id') || '').trim();
   if (!/^[0-9A-Z]{6}$/.test(id)) return json({ ok: false, error: '编号格式不对' }, 400);
 
-  // 已发布/已拒绝的记录会挪到 done/ 前缀
-  const meta = await env.SUBMIT_BUCKET.get(`done/${id}/_meta.json`);
-  if (meta) {
-    const m = JSON.parse(await meta.text());
+  // 被拒绝
+  const rej = await env.SUBMIT_BUCKET.get(`${id}/_rejected.json`);
+  if (rej) {
+    const r = JSON.parse(await rej.text());
+    return json({ ok: true, status: 'rejected', note: r.adminNote || null });
+  }
+
+  // 还在队列里？
+  const meta = await env.SUBMIT_BUCKET.get(`${id}/_meta.json`);
+  if (!meta) return json({ ok: true, status: 'unknown' });
+
+  // 审核通过了吗？
+  const ap = await env.SUBMIT_BUCKET.get(`${id}/_approved.json`);
+  if (!ap) return json({ ok: true, status: 'pending' });
+
+  const a = JSON.parse(await ap.text());
+
+  // 已经推到主仓库了吗（找这条对应的 PR 记录）
+  const pushed = await env.SUBMIT_BUCKET.get(`${id}/_pushed.json`);
+  if (pushed) {
+    const p = JSON.parse(await pushed.text());
     return json({
-      ok: true, status: m.status || 'done',
-      prUrl: m.prUrl || null,
-      prNumber: m.prNumber || null,
-      note: m.adminNote || null
+      ok: true, status: 'pushed',
+      prUrl: p.prUrl || null, prNumber: p.prNumber || null
     });
   }
 
-  // 还在队列里
-  const pending = await env.SUBMIT_BUCKET.get(`${id}/_meta.json`);
-  if (pending) return json({ ok: true, status: 'pending' });
-
-  return json({ ok: true, status: 'unknown' });
+  return json({ ok: true, status: 'approved', branch: a.branch || null });
 }
 
 /* ============================================================

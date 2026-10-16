@@ -14,7 +14,10 @@
   var emptyEl = $('empty'), whoEl = $('who'), gateMsg = $('gateMsg');
   var drawer = $('drawer'), drawerBg = $('drawerBg'), drawerClose = $('drawerClose');
   var dTitle = $('dTitle'), dBody = $('dBody'), dMsg = $('dMsg'), adminNote = $('adminNote');
-  var btnPublish = $('btnPublish'), btnPublishDirect = $('btnPublishDirect'), btnReject = $('btnReject');
+  var btnApprove = $('btnApprove'), btnReject = $('btnReject');
+  // 待推送区
+  var stage = $('stage'), stageList = $('stageList'), stageMsg = $('stageMsg'),
+      stageBranch = $('stageBranch');
 
   var current = null;     // 当前打开的投稿 { id, ... }
 
@@ -74,9 +77,11 @@
           whoEl.innerHTML = '管理员：<b></b>';
           whoEl.querySelector('b').textContent = j.login;
           load();
+          loadStage();      // 待推送的分支
         } else {
           gate.hidden = false;
           board.hidden = true;
+          stage.hidden = true;
         }
       })
       .catch(function (e) {
@@ -138,7 +143,7 @@
 
     items.forEach(function (it) {
       var li = document.createElement('li');
-      li.className = 'q-item';
+      li.className = 'q-item' + (it.approved ? ' approved' : '');
       li.tabIndex = 0;
       li.setAttribute('role', 'button');
 
@@ -152,6 +157,14 @@
       top.querySelector('.q-college').textContent = it.collegeName;
       top.querySelector('.q-count').textContent =
         (it.files || []).length + ' 张';
+      // 已审核通过的打个标记
+      if (it.approved) {
+        var flag = document.createElement('span');
+        flag.className = 'q-flag';
+        flag.textContent = '已进 fork';
+        top.querySelector('.q-count').parentNode.insertBefore(flag,
+          top.querySelector('.q-count'));
+      }
       li.appendChild(top);
 
       if (it.note) {
@@ -244,25 +257,31 @@
   });
 
   /* ============================================================
-     动作：发布 / 直接提交 / 拒绝
+     动作：审核通过 / 拒绝
      ============================================================ */
 
   function act(kind) {
     if (!current) return;
     var id = current.id;
-    var label = kind === 'publish' ? '发布' : (kind === 'direct' ? '直接提交' : '拒绝');
-    if (!confirm('确定' + label + '投稿 ' + id + '？')) return;
 
-    var buttons = [btnPublish, btnPublishDirect, btnReject];
+    if (kind === 'approve') {
+      if (!confirm(
+        '把投稿 ' + id + ' 写进小号的 fork？\n\n' +
+        '这一步不动主仓库。写完之后你可以去 GitHub 上改名、删图、调顺序，' +
+        '改满意了再点「推送到主仓库」。')) return;
+    } else {
+      if (!confirm('确定拒绝投稿 ' + id + '？')) return;
+    }
+
+    var buttons = [btnApprove, btnReject];
     buttons.forEach(function (b) { b.disabled = true; });
-    dMsg.textContent = label + '中…';
+    dMsg.textContent = (kind === 'approve' ? '正在写入小号 fork…' : '正在拒绝…');
 
     var fd = new FormData();
     fd.append('id', id);
     fd.append('note', adminNote.value.trim());
-    if (kind === 'direct') fd.append('skipPR', '1');
 
-    var url = kind === 'reject' ? '/api/review/reject' : '/api/review/publish';
+    var url = kind === 'reject' ? '/api/review/reject' : '/api/review/approve';
 
     fetch(url, { method: 'POST', body: fd })
       .then(function (r) { return r.json(); })
@@ -270,15 +289,23 @@
         buttons.forEach(function (b) { b.disabled = false; });
         if (!j.ok) {
           if (r_unauthorized(j)) { closeDrawer(); return; }
-          dMsg.innerHTML = '<span style="color:var(--warn)">' + esc(j.error || '失败') + '</span>';
+          dMsg.innerHTML = '<span style="color:var(--warn);white-space:pre-wrap">' +
+            esc(j.error || '失败') + '</span>';
           return;
         }
-        var msg = '已' + label + '。';
-        if (j.prUrl) msg += ' <a href="' + esc(j.prUrl) + '" target="_blank" rel="noopener">' +
-          '查看 PR #' + j.prNumber + '</a>';
-        dMsg.innerHTML = '<span style="color:var(--go)">' + msg + '</span>';
-        closeDrawer();
-        load();          // 列表里那条已经没了
+
+        if (kind === 'approve') {
+          // 审核通过 = 进了 fork。去「待推送」那一栏处理。
+          dMsg.innerHTML = '<span style="color:var(--go)">已写入小号 fork。</span> ' +
+            '<a href="' + esc(j.forkUrl) + '" target="_blank" rel="noopener">去看看 →</a>' +
+            '<br><span style="font-size:12px;opacity:.8">' +
+            '可以在这里改名、删图、调顺序，改完回下面「待推送到主仓库」推送。</span>';
+          loadStage();          // 刷新待推送列表
+        } else {
+          dMsg.innerHTML = '<span style="color:var(--warn)">已拒绝。</span>';
+        }
+
+        load();                 // 刷新待审列表
       })
       .catch(function (e) {
         buttons.forEach(function (b) { b.disabled = false; });
@@ -286,11 +313,85 @@
       });
   }
 
-  btnPublish.addEventListener('click', function () { act('publish'); });
-  btnPublishDirect.addEventListener('click', function () { act('direct'); });
+  btnApprove.addEventListener('click', function () { act('approve'); });
   btnReject.addEventListener('click', function () { act('reject'); });
 
-  $('reload').addEventListener('click', load);
+  /* ============================================================
+     待推送区：已审核通过、还没提到主仓库的分支
+     ============================================================ */
+  function loadStage() {
+    fetch('/api/review/pending-branches', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j.ok) { return; }
+        var items = j.items || [];
+        stage.hidden = items.length === 0;
+
+        stageList.innerHTML = items.map(function (it) {
+          var when = fmtTime(it.at);
+          return '<li class="stage-item">' +
+            '<a href="https://github.com/' + esc(it.forkFull || '') +
+              '/tree/' + encodeURIComponent(it.branch) +
+              '" target="_blank" rel="noopener" class="stage-branch">' +
+              esc(it.branch) + '</a>' +
+            '<span class="stage-meta">' + esc(it.id) + ' · ' +
+              (it.files ? it.files.length : 0) + ' 张 · ' + when + '</span>' +
+            '</li>';
+        }).join('');
+
+        // 下拉框列出分支名，方便选
+        var sel = $('stageBranch');
+        var cur = sel.value;
+        sel.innerHTML = items.map(function (it) {
+          return '<option value="' + esc(it.branch) + '">' + esc(it.branch) + '</option>';
+        }).join('');
+        if (cur && items.some(function (i) { return i.branch === cur; })) sel.value = cur;
+      })
+      .catch(function (e) {
+        stageMsg.innerHTML = '<span style="color:var(--warn)">读取待推列表失败：' +
+          esc(e.message) + '</span>';
+      });
+  }
+
+  $('btnPush').addEventListener('click', function () {
+    var branch = $('stageBranch').value;
+    if (!branch) { stageMsg.innerHTML = '先选一个分支'; return; }
+    if (!confirm('把 ' + branch + ' 推送到主仓库（建 PR）？')) return;
+
+    var b = $('btnPush');
+    b.disabled = true;
+    stageMsg.textContent = '正在推送…';
+
+    var fd = new FormData();
+    fd.append('branch', branch);
+
+    fetch('/api/review/push', { method: 'POST', body: fd })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        b.disabled = false;
+        if (!j.ok) {
+          if (r_unauthorized(j)) return;
+          stageMsg.innerHTML = '<span style="color:var(--warn);white-space:pre-wrap">' +
+            esc(j.error || '失败') + '</span>';
+          return;
+        }
+        stageMsg.innerHTML = '<span style="color:var(--go)">PR 建好了：</span> ' +
+          '<a href="' + esc(j.prUrl) + '" target="_blank" rel="noopener">' +
+          '#' + j.prNumber + '</a>' +
+          '<br><span style="font-size:12px;opacity:.8">' +
+          j.commits + ' 次提交 · ' + j.filesChanged + ' 个文件' +
+          (j.colleges && j.colleges.length ? ' · ' + esc(j.colleges.join('、')) : '') +
+          '</span>';
+        loadStage();
+      })
+      .catch(function (e) {
+        b.disabled = false;
+        stageMsg.innerHTML = '<span style="color:var(--warn)">' + esc(e.message) + '</span>';
+      });
+  });
+
+  $('reloadStage').addEventListener('click', loadStage);
+  $('reload').addEventListener('click', function () { load(); loadStage(); });
 
   /* ============================================================
      工具

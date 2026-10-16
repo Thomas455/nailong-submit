@@ -57,6 +57,28 @@
     <ul class="queue" id="queue"></ul>
   </section>
 
+  <!-- 待推送：已审核通过、还没提到主仓库的分支 -->
+  <section class="step" id="stage" hidden>
+    <div class="step-head">
+      <span class="num">↑</span>
+      <h2>待推送到主仓库</h2>
+      <button class="mini" id="reloadStage" type="button">刷新</button>
+    </div>
+    <p class="note">
+      「审核通过」只是把作品写进了小号的 fork。你可以点进去改名、删图、调顺序，
+      改满意了再在这里一次性推成 PR。
+    </p>
+    <ul class="stage-list" id="stageList"></ul>
+    <div class="stage-push">
+      <label class="field" style="flex:1">
+        <span>要推送的分支</span>
+        <select id="stageBranch"></select>
+      </label>
+      <button class="btn primary" id="btnPush" type="button">推送到主仓库（建 PR）</button>
+    </div>
+    <p class="note small" id="stageMsg"></p>
+  </section>
+
 </div>
 
 <!-- 详情抽屉 -->
@@ -67,8 +89,7 @@
     <h2 id="dTitle">投稿详情</h2>
     <div id="dBody"></div>
     <div class="drawer-actions">
-      <button class="btn primary" id="btnPublish" type="button">发布（建 PR）</button>
-      <button class="btn primary alt" id="btnPublishDirect" type="button">直接提交（不建 PR）</button>
+      <button class="btn primary" id="btnApprove" type="button">审核通过（写入小号 fork）</button>
       <button class="btn ghost" id="btnReject" type="button">拒绝</button>
     </div>
     <label class="field">

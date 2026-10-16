@@ -195,9 +195,12 @@
         if (j.status === 'pending') {
           statusResult.innerHTML = '<p style="color:var(--ink)">编号 ' + id +
             '：等待审核中。维护者看过后会发布。</p>';
-        } else if (j.status === 'published') {
-          statusResult.innerHTML = '<p style="color:var(--go)">编号 ' + id + '：已发布！' +
-            (j.prUrl ? ' <a href="' + escapeHtml(j.prUrl) + '" target="_blank" rel="noopener">查看提交</a>' : '') +
+        } else if (j.status === 'approved') {
+          statusResult.innerHTML = '<p style="color:var(--go)">编号 ' + id +
+            '：已通过审核，正在准备上线。</p>';
+        } else if (j.status === 'pushed') {
+          statusResult.innerHTML = '<p style="color:var(--go)">编号 ' + id + '：已上线！' +
+            (j.prUrl ? ' <a href="' + escapeHtml(j.prUrl) + '" target="_blank" rel="noopener">查看</a>' : '') +
             '</p>';
         } else if (j.status === 'rejected') {
           statusResult.innerHTML = '<p style="color:var(--warn)">编号 ' + id + '：没有通过审核。' +

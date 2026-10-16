@@ -1,23 +1,32 @@
-/* ============================================================================
-   管理页：待审列表 / 预览 / 发布 / 拒绝
-
-   ---- 鉴权 ----
-   每一个接口都先过 requireAdmin()（校验 HttpOnly 签名 cookie + 白名单）。
-   没登录 → 401。这是**服务端**判断，不依赖前端藏不藏按钮。
-
-   ---- 发布做了什么 ----
-   拿小号的 token（BOT_TOKEN）：
-     建分支 → 从 R2 读图写入 works/ → 更新 list.txt → 建 PR
-   小号只有仓库所有者手动点「发布」时才会被用到一次。
-
-   ---- 发布后的文件怎么办 ----
-   把暂存的图片挪到 done/{id}/，并写一份带发布结果的 _meta.json。
-   访客拿编号能查到「已发布 + PR 链接」。
-   （不删除是为了让访客能查到状态；R2 便宜，定期清即可。）
-   ============================================================ */
-
 import { requireAdmin, json } from './admin.js';
 import { GH_API, REPO, WORKS_DIR } from './guest.js';
+
+/* ============================================================================
+   审核：两个动作
+
+   ① 审核通过（approve）
+      把图片和 list.txt 写进**小号自己的 fork**，不建 PR、不碰主仓库。
+
+      为什么写 fork 而不是主仓库：小号不是主仓库的成员（push=false），
+      而 GitHub 明确规定 fine-grained token 无法给「非成员」的公开仓库写入。
+      但 token 对**自己拥有的 fork** 有完整写权限 —— 这就是绕开该限制的办法。
+
+   ② 推送（push）
+      把 fork 上攒好的所有改动，以**一个** PR 的形式提到主仓库。
+
+      好处：审核通过之后你可以去 GitHub 网页上手动改名、删图、调顺序、
+      攒几批再一次性推，比每条投稿开一个 PR 省事得多。
+
+   数据流：
+       待审投稿 ──[审核通过]──> 小号 fork（可以手动改）
+                                 │
+                                 └──[推送]──> 主仓库的 PR
+
+   环境变量：
+     BOT_TOKEN        小号的 token（⚠️ 保密）
+     BOT_FORK_OWNER   小号用户名。不配就用 token 自动反查
+     BOT_FORK_REPO    fork 的仓库名，默认和主仓库同名
+   ============================================================================ */
 
 export async function reviewRoutes(url, request, env) {
   const p = url.pathname;
@@ -25,8 +34,15 @@ export async function reviewRoutes(url, request, env) {
   if (p === '/api/review/list' && request.method === 'GET') return listPending(request, env);
   if (p === '/api/review/detail' && request.method === 'GET') return detail(request, env, url);
   if (p === '/api/review/image' && request.method === 'GET') return image(request, env, url);
-  if (p === '/api/review/publish' && request.method === 'POST') return publish(request, env);
+  if (p === '/api/review/approve' && request.method === 'POST') return approve(request, env);
+  if (p === '/api/review/push' && request.method === 'POST') return push(request, env);
   if (p === '/api/review/reject' && request.method === 'POST') return reject(request, env);
+
+  // 已审核但还没推到主仓库的分支列表
+  if (p === '/api/review/pending-branches' && request.method === 'GET') {
+    return pendingBranches(request, env);
+  }
+
   return null;
 }
 
@@ -42,15 +58,11 @@ async function listPending(request, env) {
   if (!env.SUBMIT_BUCKET) return json({ ok: false, error: '未配置存储' }, 503);
 
   const out = [];
-  // R2 的 list() 返回 Promise，要先 await 才能 for await。
-  //
-  // 这里不用 for await 遍历，改用 .objects 数组逐页处理 ——
-  // 原因：真实 R2 的异步迭代器在游标翻页时可能抛异常，而这个接口是
-  // 管理页的核心，出错就等于「管理页整个挂掉」。逐页 + 显式 try/catch
-  // 更可控，而且能顺手处理 1000 条/页的上限。
   const seen = new Set();
   let cursor;
 
+  // 逐页取，不用 for await —— 真实 R2 的异步迭代器翻页时可能抛异常，
+  // 而这个接口挂了等于管理页全废。逐页 + try/catch 更可控。
   try {
     do {
       const page = await env.SUBMIT_BUCKET.list({ prefix: '', cursor });
@@ -63,7 +75,7 @@ async function listPending(request, env) {
         if (slash <= 0) continue;                    // 顶层 key（rl/xxx 这类）
         const id = key.slice(0, slash);
         if (!/^[0-9A-Z]{6}$/.test(id)) continue;      // 跳过 rl/、done/ 之类
-        if (!key.endsWith('/_meta.json')) continue;   // 只看元数据，不重复处理图片
+        if (!key.endsWith('/_meta.json')) continue;   // 只看元数据
         if (seen.has(id)) continue;
         seen.add(id);
 
@@ -72,9 +84,13 @@ async function listPending(request, env) {
           if (!meta) continue;
           const m = JSON.parse(await meta.text());
           m.id = id;
+
+          // 顺带看看这条是不是已经审核通过过（写过 _approved.json）
+          const ap = await env.SUBMIT_BUCKET.get(`${id}/_approved.json`);
+          m.approved = ap ? JSON.parse(await ap.text()) : null;
+
           out.push(m);
         } catch (e) {
-          // 单条读失败不影响其它条目
           console.error('listPending: 读取', id, '失败', e && e.message);
         }
       }
@@ -82,8 +98,6 @@ async function listPending(request, env) {
       cursor = page.truncated ? page.cursor : undefined;
     } while (cursor);
   } catch (e) {
-    // 列 R2 本身失败 —— 记日志，但把已经拿到的部分返回，
-    // 免得整个管理页因为一条坏数据就打不开
     console.error('listPending: 列举 R2 失败', e && e.message);
   }
 
@@ -93,7 +107,7 @@ async function listPending(request, env) {
 }
 
 /* ============================================================
-   单条详情（管理页预览用，带图片直链）
+   单条详情（带预览图链接）
    ============================================================ */
 async function detail(request, env, url) {
   if (!(await requireAdmin(request, env))) return unauthorized();
@@ -104,17 +118,22 @@ async function detail(request, env, url) {
   if (!meta) return json({ ok: false, error: '找不到这条投稿' }, 404);
 
   const m = JSON.parse(await meta.text());
-  // 图片直链：管理页已登录，靠 cookie 鉴权后从这里取
-  m.previews = (m.files || []).map((f) => `/api/review/image?id=${id}&name=${encodeURIComponent(f.name)}`);
+  m.previews = (m.files || []).map((f) =>
+    `/api/review/image?id=${id}&name=${encodeURIComponent(f.name)}`);
   m.id = id;
+
+  const ap = await env.SUBMIT_BUCKET.get(`${id}/_approved.json`);
+  m.approved = ap ? JSON.parse(await ap.text()) : null;
+
   return json({ ok: true, item: m });
 }
 
-// 单独取图（管理页 <img> 用）。必须登录。
+// 预览图（管理页 <img> 用）。必须登录。
 async function image(request, env, url) {
   if (!(await requireAdmin(request, env))) return new Response('unauthorized', { status: 401 });
   const id = String(url.searchParams.get('id') || '');
   const name = String(url.searchParams.get('name') || '');
+
   // 文件名必须严格等于元数据里记录的那个，不能只靠参数（防路径穿越）
   const meta = await env.SUBMIT_BUCKET.get(`${id}/_meta.json`);
   if (!meta) return new Response('not found', { status: 404 });
@@ -134,9 +153,9 @@ async function image(request, env, url) {
 }
 
 /* ============================================================
-   发布
+   ① 审核通过 → 写进小号的 fork
    ============================================================ */
-async function publish(request, env) {
+async function approve(request, env) {
   const admin = await requireAdmin(request, env);
   if (!admin) return unauthorized();
   if (!env.BOT_TOKEN) return json({ ok: false, error: '服务端没配 BOT_TOKEN' }, 503);
@@ -153,35 +172,36 @@ async function publish(request, env) {
   const m = JSON.parse(await meta.text());
 
   const adminNote = String(form.get('note') || '').slice(0, 300);
-  const skipPR = form.get('skipPR') === '1';      // 直接提交到 main，不建 PR
 
   try {
-    const res = await pushToRepo(m, env, { admin, adminNote, skipPR });
-    // 写结果 + 挪到 done/
-    await env.SUBMIT_BUCKET.put(`done/${id}/_meta.json`, JSON.stringify({
-      ...m, status: 'published', ...res, adminNote
+    const res = await pushToFork(m, env, { admin, adminNote });
+
+    // 记一笔，方便「推送」时列出待推分支
+    await env.SUBMIT_BUCKET.put(`${id}/_approved.json`, JSON.stringify({
+      at: Date.now(), by: admin, adminNote,
+      branch: res.branch, files: res.files
     }), { httpMetadata: { contentType: 'application/json' } });
-    await moveToDone(env, id, m);
+
     return json({ ok: true, ...res });
   } catch (e) {
     return json({ ok: false, error: e.message }, 500);
   }
 }
 
-/* ---- 真正写 GitHub 的部分 ---- */
-async function pushToRepo(m, env, { admin, adminNote, skipPR }) {
+/* ---- 把作品写进小号的 fork ---- */
+async function pushToFork(m, env, { admin, adminNote }) {
   const token = env.BOT_TOKEN;
-  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-  const branch = 'guest/' + stamp + '-' + m.id.toLowerCase();
-
+  const fork = await forkRepo(env);
+  const branch = 'guest/' + stamp() + '-' + m.id.toLowerCase();
   const dir = `${WORKS_DIR}/${m.collegeDir}`;
 
-  // 1. 找 main 的 sha（从主仓库拿，因为小号是 owner 有全权限）
-  const ref = await gh(token, 'GET', `/repos/${REPO.owner}/${REPO.repo}/git/ref/heads/${REPO.branch}`);
+  // 1. 读 fork 上 main 的 sha
+  const ref = await gh(token, 'GET',
+    `/repos/${fork.owner}/${fork.repo}/git/ref/heads/${REPO.branch}`);
   const baseSha = ref.object.sha;
 
-  // 2. 建分支
-  await gh(token, 'POST', `/repos/${REPO.owner}/${REPO.repo}/git/refs`, {
+  // 2. 建分支（写在 fork 上 —— token 对自己的 fork 有权限）
+  await gh(token, 'POST', `/repos/${fork.owner}/${fork.repo}/git/refs`, {
     ref: `refs/heads/${branch}`, sha: baseSha
   });
 
@@ -191,68 +211,218 @@ async function pushToRepo(m, env, { admin, adminNote, skipPR }) {
     const obj = await env.SUBMIT_BUCKET.get(`${m.id}/${f.name}`);
     if (!obj) throw new Error('R2 里找不到文件：' + f.name);
     const bytes = new Uint8Array(await obj.arrayBuffer());
-    await gh(token, 'PUT', `/repos/${REPO.owner}/${REPO.repo}/contents/${enc(dir + '/' + f.name)}`, {
-      message: `guest submission: ${f.name}`,
-      content: b64(bytes),
-      branch
-    });
+    await gh(token, 'PUT',
+      `/repos/${fork.owner}/${fork.repo}/contents/${enc(dir + '/' + f.name)}`, {
+        message: `guest submission: ${f.name}`,
+        content: b64(bytes),
+        branch
+      });
     uploaded.push(f.name);
   }
 
   // 4. 更新 list.txt（追加到末尾 = 显示在最上面）
-  const listRes = await gh(token, 'GET',
-    `/repos/${REPO.owner}/${REPO.repo}/contents/${enc(dir + '/list.txt')}?ref=${encodeURIComponent(REPO.branch)}`,
-    undefined, true);
+  await updateList(token, fork, dir, uploaded, branch);
+
+  return {
+    branch,
+    files: uploaded,
+    forkFull: `${fork.owner}/${fork.repo}`,
+    // 点进去就能看到，方便你手动调整
+    forkUrl: `https://github.com/${fork.owner}/${fork.repo}/tree/${encodeURIComponent(branch)}`
+  };
+}
+
+/* ---- 改 list.txt：读现有内容 → 追加新作品 ---- */
+async function updateList(token, fork, dir, uploaded, branch) {
+  const api = `/repos/${fork.owner}/${fork.repo}/contents/${enc(dir + '/list.txt')}`;
+
+  // fork 上可能已经有 list.txt（旧副本），也可能没有
   let lines = [];
   let sha;
-  if (listRes) {
-    lines = String(listRes.content || '').replace(/\s/g, '')
-      ? decodeB64(listRes.content).split(/\r?\n/).map(s => s.trim()).filter(Boolean) : [];
-    sha = listRes.sha;
+  const existing = await gh(token, 'GET', api + '?ref=' + encodeURIComponent(REPO.branch), undefined, true);
+  if (existing) {
+    lines = String(existing.content || '').replace(/\s/g, '')
+      ? decodeB64(existing.content).split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+      : [];
+    sha = existing.sha;
   }
+
+  // 去掉同名旧条目（避免重复），再追加新的
   const seen = {};
-  uploaded.forEach(n => { seen[n.toLowerCase()] = 1; });
-  lines = lines.filter(l => !seen[l.toLowerCase()]);
+  uploaded.forEach((n) => { seen[n.toLowerCase()] = 1; });
+  lines = lines.filter((l) => !seen[l.toLowerCase()]);
   lines = lines.concat(uploaded);
-  const listText = lines.join('\n') + '\n';
 
-  await gh(token, 'PUT', `/repos/${REPO.owner}/${REPO.repo}/contents/${enc(dir + '/list.txt')}`, {
-    message: `guest submission: update list.txt for ${m.collegeName}`,
-    content: b64(new TextEncoder().encode(listText)),
-    branch,
-    ...(sha ? { sha } : {})
-  });
+  const body = {
+    message: 'guest submission: update list.txt',
+    content: b64(new TextEncoder().encode(lines.join('\n') + '\n')),
+    branch
+  };
+  if (sha) body.sha = sha;
 
-  // 5. 建 PR 或直接推 main
-  if (skipPR) {
-    // 把分支合并进 main
-    await gh(token, 'PUT',
-      `/repos/${REPO.owner}/${REPO.repo}/merges`, {
-        base: REPO.branch, head: branch, commit_message: `guest submission ${m.id}`
-      });
-    return { branch, prUrl: null, prNumber: null, publishedBy: admin };
+  await gh(token, 'PUT', api, body);
+}
+
+/* ============================================================
+   ② 推送 → fork 上的改动以 PR 形式提到主仓库
+   ============================================================ */
+async function push(request, env) {
+  const admin = await requireAdmin(request, env);
+  if (!admin) return unauthorized();
+  if (!env.BOT_TOKEN) return json({ ok: false, error: '服务端没配 BOT_TOKEN' }, 503);
+
+  let form;
+  try { form = await request.formData(); } catch (e) {
+    return json({ ok: false, error: '请求不对' }, 400);
+  }
+  const branch = String(form.get('branch') || '').trim();
+
+  // 只允许 guest/ 开头的分支名 —— 不让前端随便传分支名来推东西
+  if (!/^guest\/[a-zA-Z0-9._-]+$/.test(branch)) {
+    return json({ ok: false, error: '分支名不对（应该像 guest/20260101-abc123）' }, 400);
   }
 
-  const body = [
-    `## 游客投稿 · ${m.collegeName}`,
-    '',
-    `编号 \`${m.id}\` · 由 @${admin} 审核通过`,
-    '',
-    m.note ? `> 投稿留言：\n> ${m.note.split(/\r?\n/).join('\n> ')}\n` : '',
-    adminNote ? `**审核备注**：${adminNote}\n` : '',
-    '**作品**',
-    '',
-    ...uploaded.map(n => `- \`${n}\``),
-    '',
-    '---',
-    '> 这是一次游客投稿（投稿人没有 GitHub 账号，通过投稿站提交）。'
-  ].filter(Boolean).join('\n');
+  const fork = await forkRepo(env);
+  const token = env.BOT_TOKEN;
+
+  // 这个分支得真的存在
+  let head;
+  try {
+    head = await gh(token, 'GET', `/repos/${fork.owner}/${fork.repo}/git/ref/heads/${branch}`);
+  } catch (e) {
+    return json({ ok: false, error: 'fork 上找不到分支 ' + branch + '\n' + e.message }, 400);
+  }
+
+  // 和主仓库的 main 比一下，看看这个分支改了什么
+  let compare = null;
+  try {
+    compare = await gh(token, 'GET',
+      `/repos/${REPO.owner}/${REPO.repo}/compare/${REPO.branch}...${fork.owner}:${branch}`);
+  } catch (e) {
+    // compare 失败不致命，接着试着建 PR（GitHub 自己会判断有没有差异）
+    console.error('push: compare 失败', e && e.message);
+  }
+
+  const colleges = compare ? touchedColleges(compare) : [];
+  const commits = (compare && compare.total_commits) || 0;
+  const filesChanged = (compare && compare.files && compare.files.length) || 0;
+
+  if (compare && commits === 0) {
+    return json({ ok: false, error: '这个分支相对主仓库没有改动，可能已经合并过了。' }, 400);
+  }
+
+  const title = String(form.get('title') || '').trim()
+    || `[游客投稿] ${colleges.length ? colleges.join('、') : '作品更新'}（${commits} 次提交）`;
 
   const pr = await gh(token, 'POST', `/repos/${REPO.owner}/${REPO.repo}/pulls`, {
-    title: `[游客投稿] ${m.collegeName} · ${uploaded.length} 件`,
-    body, head: branch, base: REPO.branch
+    title,
+    body: buildPushPRBody(compare, colleges, branch, fork),
+    head: `${fork.owner}:${branch}`,      // 跨 fork 提 PR 的写法
+    base: REPO.branch
   });
-  return { branch, prUrl: pr.html_url, prNumber: pr.number, publishedBy: admin };
+
+  // 把「这条投稿已推成 PR」记下来，投稿人查编号时能看到链接
+  await markPushed(env, branch, { prUrl: pr.html_url, prNumber: pr.number });
+
+  return json({
+    ok: true,
+    prUrl: pr.html_url,
+    prNumber: pr.number,
+    branch,
+    commits,
+    filesChanged,
+    colleges
+  });
+}
+
+// 把这个分支上的所有投稿标记为「已推送」
+async function markPushed(env, branch, res) {
+  try {
+    const page = await env.SUBMIT_BUCKET.list({ prefix: '', cursor: undefined });
+    for (const obj of ((page && page.objects) || [])) {
+      const key = (obj && obj.key) || '';
+      const m = /^([0-9A-Z]{6})\/_approved\.json$/.exec(key);
+      if (!m) continue;
+      try {
+        const r = await env.SUBMIT_BUCKET.get(key);
+        if (!r) continue;
+        const a = JSON.parse(await r.text());
+        if (a.branch !== branch) continue;      // 只标记同一个分支上的
+        await env.SUBMIT_BUCKET.put(`${m[1]}/_pushed.json`, JSON.stringify({
+          at: Date.now(), ...res
+        }), { httpMetadata: { contentType: 'application/json' } });
+      } catch (e) { /* 坏数据跳过 */ }
+    }
+  } catch (e) {
+    console.error('markPushed 失败', e && e.message);
+  }
+}
+
+/* ---- 已审核但还没推的分支 ---- */
+async function pendingBranches(request, env) {
+  if (!(await requireAdmin(request, env))) return unauthorized();
+  if (!env.SUBMIT_BUCKET) return json({ ok: false, error: '未配置存储' }, 503);
+
+  const out = [];
+  try {
+    const page = await env.SUBMIT_BUCKET.list({ prefix: '', cursor: undefined });
+    for (const obj of ((page && page.objects) || [])) {
+      const key = (obj && obj.key) || '';
+      const m = /^([0-9A-Z]{6})\/_approved\.json$/.exec(key);
+      if (!m) continue;
+      try {
+        const r = await env.SUBMIT_BUCKET.get(key);
+        if (r) out.push({ id: m[1], ...JSON.parse(await r.text()) });
+      } catch (e) { /* 坏数据跳过 */ }
+    }
+  } catch (e) {
+    console.error('pendingBranches 失败', e && e.message);
+  }
+
+  out.sort((a, b) => (b.at || 0) - (a.at || 0));
+  return json({ ok: true, items: out });
+}
+
+// 从 compare 结果里找出改了哪些学院的作品
+function touchedColleges(compare) {
+  const set = new Set();
+  for (const f of (compare && compare.files) || []) {
+    const m = new RegExp('^' + WORKS_DIR + '/([^/]+)/').exec(f.filename || '');
+    if (m) set.add(m[1]);
+  }
+  return [...set];
+}
+
+function buildPushPRBody(compare, colleges, branch, fork) {
+  const L = [];
+  const commits = (compare && compare.total_commits) || 0;
+  const files = (compare && compare.files) || [];
+
+  L.push('## 游客作品合集');
+  L.push('');
+  L.push('这批作品已推到小号的 fork（`' + fork.owner + '/' + fork.repo + '`）的 `' + branch + '` 分支，在此合并到主仓库。');
+  L.push('');
+  L.push('**本批改动**');
+  L.push('');
+  L.push('- 提交数：' + commits);
+  L.push('- 改动文件：' + files.length);
+  L.push('- 涉及学院：' + (colleges.length ? colleges.join('、') : '—'));
+  L.push('');
+
+  if (files.length) {
+    L.push('**文件清单**');
+    L.push('');
+    for (const f of files.slice(0, 100)) {
+      L.push('- `' + f.filename + '`（' + (f.status || '') + '）');
+    }
+    if (files.length > 100) L.push('- …还有 ' + (files.length - 100) + ' 个');
+    L.push('');
+  }
+
+  L.push('---');
+  L.push('');
+  L.push('> 合并后 Cloudflare 会自动重新部署，作品出现在展览馆对应学院的卡片里。');
+  return L.join('\n');
 }
 
 /* ============================================================
@@ -272,57 +442,75 @@ async function reject(request, env) {
   if (!meta) return json({ ok: false, error: '找不到这条投稿' }, 404);
   const m = JSON.parse(await meta.text());
 
-  await env.SUBMIT_BUCKET.put(`done/${id}/_meta.json`, JSON.stringify({
-    ...m, status: 'rejected', adminNote
+  // 标记为已拒绝，投稿人查编号时能看到
+  await env.SUBMIT_BUCKET.put(`${id}/_rejected.json`, JSON.stringify({
+    at: Date.now(), adminNote
   }), { httpMetadata: { contentType: 'application/json' } });
-  await moveToDone(env, id, m);
 
   return json({ ok: true });
 }
 
-// 把图片从 pending 前缀挪到 done/ 下（保留记录让访客查状态，图片可定期清）
-async function moveToDone(env, id, m) {
-  for (const f of m.files || []) {
-    const obj = await env.SUBMIT_BUCKET.get(`${id}/${f.name}`);
-    if (obj) {
-      await env.SUBMIT_BUCKET.put(`done/${id}/${f.name}`, await obj.arrayBuffer(), {
-        httpMetadata: obj.httpMetadata || { contentType: f.type }
-      });
-      await env.SUBMIT_BUCKET.delete(`${id}/${f.name}`);
-    }
-  }
-  await env.SUBMIT_BUCKET.delete(`${id}/_meta.json`);
+/* ============================================================
+   工具
+   ============================================================ */
+function stamp() {
+  return new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+}
+
+// 小号 fork 的仓库坐标。
+//
+// ⚠️ owner 是**小号**，不是主仓库 owner —— fork 属于小号，
+//   而 token 只对自己的 fork 有写权限。
+//   小号用户名用 token 反查（GET /user），不用额外配环境变量。
+const forkOwnerCache = new Map();
+
+async function forkOwner(env) {
+  if (env.BOT_FORK_OWNER) return env.BOT_FORK_OWNER;
+  const cached = forkOwnerCache.get('o');
+  if (cached) return cached;
+
+  const u = await gh(env.BOT_TOKEN, 'GET', '/user');
+  const login = u && u.login;
+  if (!login) throw new Error('无法确定小号用户名：GitHub 没返回 login');
+  forkOwnerCache.set('o', login);
+  return login;
+}
+
+async function forkRepo(env) {
+  return { owner: await forkOwner(env), repo: env.BOT_FORK_REPO || REPO.repo };
 }
 
 /* ============================================================
-   GitHub API 小封装
+   GitHub API 封装
 
-   出错时把「哪个接口 + HTTP 状态 + GitHub 的原话 + 缺什么权限」
-   都带上 —— 只说 "GitHub: Resource not accessible by integration"
-   根本没法排查。
+   ⚠️ User-Agent 头是**必须的**，少了会被 GitHub 直接 403：
+      "Request forbidden by administrative rules. Please make sure your
+       request has a User-Agent header"
    ============================================================ */
-
-// 接口路径片段 → 需要什么权限，用来在报错时给出可执行的提示。
-// ⚠️ 顺序重要：更具体的路径要排在更宽的前面，
-//    否则 /git/refs 会被 /git/ref 先匹配掉，提示成「读」而不是「写」。
 const NEEDED = [
-  ['/contents',   'Contents: 读写（提交文件）'],
-  ['/pulls',      'Pull requests: 写（建 PR）'],
-  ['/merges',     'Contents: 写（合并分支）'],
-  ['/git/refs',   'Contents: 写（建分支）'],
-  ['/git/ref/',   'Contents: 读（读分支）']
+  ['/contents',  'Contents: 读写（提交文件）'],
+  ['/pulls',     'Pull requests: 写（建 PR）'],
+  ['/compare',   'Contents: 读（比较分支）'],
+  ['/merges',    'Contents: 写（合并分支）'],
+  ['/git/refs',  'Contents: 写（建分支）'],
+  ['/git/ref/',  'Contents: 读（读分支）']
 ];
 
 function hintFor(path, status) {
   if (status === 401) return 'BOT_TOKEN 无效或已过期，需要重新生成。';
-  if (status === 404) return '找不到资源 —— 确认仓库名对、小号能看到这个仓库、branch 存在。';
+  if (status === 404) {
+    return '找不到资源。注意：小号必须**先 fork 这个仓库**，' +
+           '而且 fork 的仓库名要和主仓库一样（当前期望 ' + REPO.repo + '）。';
+  }
   if (status === 422) return 'GitHub 拒绝了这次请求（参数或状态不对），常见于分支已存在或文件冲突。';
-  if (status === 403 || status === 401) {
+  if (status === 403) {
     const hit = NEEDED.find((p) => path.indexOf(p[0]) >= 0);
-    return '小号的 token 没有权限做这件事。检查三处：\n' +
-           '  1. token 的 Permissions 里有没有「' + (hit ? hit[1] : '对应权限') + '」\n' +
-           '  2. Repository access 选的是不是「Only select repositories」并且勾选了这个仓库\n' +
-           '  3. 小号是不是对仓库有 collaborator 权限（公开仓库也要在 token 里勾上）';
+    return '小号的 token 没权限做这件事。检查：\n' +
+           '  1. token 权限里有没有「' + (hit ? hit[1] : '对应权限') + '」\n' +
+           '  2. Repository access 里勾选了这个仓库\n' +
+           '  3. 如果操作的是**主仓库**——小号不是主仓库成员，写不进去。\n' +
+           '     这是 GitHub 的限制：fine-grained token 不能给非成员的仓库写入。\n' +
+           '     所以审核流程是「写进小号自己的 fork → 再从 fork 提 PR」。';
   }
   return '';
 }
@@ -334,10 +522,6 @@ async function gh(token, method, path, body, allow404) {
       Authorization: 'Bearer ' + token,
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
-      // ⚠️ User-Agent 头是**必须的**，少了会被 GitHub 直接 403 挡掉：
-      //    "Request forbidden by administrative rules. Please make sure
-      //     your request has a User-Agent header"
-      // （admin.js 里的 fetchLogin 早就加了，这里漏了。）
       'User-Agent': 'nailong-submit-worker'
     }
   };
@@ -345,23 +529,20 @@ async function gh(token, method, path, body, allow404) {
     opt.headers['Content-Type'] = 'application/json';
     opt.body = JSON.stringify(body);
   }
+
   const r = await fetch(GH_API + path, opt);
   if (r.status === 404 && allow404) return null;
   if (r.status === 204) return null;
+
   const txt = await r.text();
   let d = null;
   try { d = txt ? JSON.parse(txt) : null; } catch (e) {}
 
   if (!r.ok) {
-    const apiMsg = (d && d.message) || txt.slice(0, 120) || ('HTTP ' + r.status);
-    // 简短路径，方便人看（完整路径太长）
-    const shortPath = path.replace('/repos/Thomas455/nailong-university', '')
-                        .slice(0, 60);
+    const apiMsg = (d && d.message) || txt.slice(0, 140) || ('HTTP ' + r.status);
+    const shortPath = path.replace('/repos/Thomas455/nailong-university', '').slice(0, 64);
     const hint = hintFor(shortPath, r.status);
-    const err = new Error(
-      `GitHub ${r.status}（${method} ${shortPath}）：${apiMsg}` +
-      (hint ? '\n' + hint : '')
-    );
+    const err = new Error(`GitHub ${r.status}（${method} ${shortPath}）：${apiMsg}` + (hint ? '\n' + hint : ''));
     err.status = r.status;
     throw err;
   }
@@ -387,6 +568,3 @@ function decodeB64(b64s) {
   for (let i = 0; i < s.length; i++) arr[i] = s.charCodeAt(i);
   return new TextDecoder('utf-8').decode(arr);
 }
-
-// 单独导出给 worker.js 注册 /api/review/image
-export { image as reviewImage };

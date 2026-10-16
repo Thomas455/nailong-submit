@@ -13,11 +13,17 @@ globalThis.fetch = async (input, init) => {
   const method = (init && init.method) || "GET";
 
   if (url.includes("api.github.com")) {
+    // 小号身份（fork 的 owner 从这里反查）
+    if (new URL(url).pathname === "/user") {
+      return new Response(JSON.stringify({ login: "boringtip" }),
+        { headers: { "Content-Type": "application/json" } });
+    }
     const hdrs = (init && init.headers) || {};
     ghCalls.push({ t: "gh", method,
       url: url.replace("https://api.github.com", ""),
       auth: hdrs.Authorization,
-      userAgent: hdrs["User-Agent"] || hdrs["user-agent"] || null });
+      userAgent: hdrs["User-Agent"] || hdrs["user-agent"] || null,
+      body: (init && init.body) ? String(init.body) : null });
     const H = { "Content-Type": "application/json" };
     const p = new URL(url).pathname;
 
@@ -42,6 +48,17 @@ globalThis.fetch = async (input, init) => {
       return new Response(JSON.stringify({ ok: true }), { headers: H });
     if (method === "PUT" && p.includes("/contents/"))
       return new Response(JSON.stringify({ ok: true }), { headers: H });
+    // compare：推送时用来比对分支相对 main 改了什么
+    if (method === "GET" && p.includes("/compare/")) {
+      return new Response(JSON.stringify({
+        total_commits: 2,
+        files: [
+          { filename: "works/美术与设计学院/我的画.webp", status: "added" },
+          { filename: "works/美术与设计学院/第二张.png", status: "added" },
+          { filename: "works/美术与设计学院/list.txt", status: "modified" }
+        ]
+      }), { headers: H });
+    }
     if (method === "POST" && p.endsWith("/pulls"))
       return new Response(JSON.stringify({
         html_url: "https://github.com/Thomas455/nailong-university/pull/999",
@@ -145,8 +162,10 @@ ok("review/list 未登录 401", (await call(E, "/api/review/list")).status === 4
 ok("review/list 伪造 cookie 401",
   (await call(E, "/api/review/list", { headers: { Cookie: "admin_session=a.b.c" } })).status === 401);
 const fdNA = new FormData(); fdNA.append("id", "ABC123");
-ok("review/publish 未登录 401",
-  (await call(E, "/api/review/publish", { method: "POST", body: fdNA })).status === 401);
+ok("review/approve 未登录 401",
+  (await call(E, "/api/review/approve", { method: "POST", body: fdNA })).status === 401);
+ok("review/push 未登录 401",
+  (await call(E, "/api/review/push", { method: "POST", body: fdNA })).status === 401);
 ok("review/reject 未登录 401",
   (await call(E, "/api/review/reject", { method: "POST", body: fdNA })).status === 401);
 ok("review/image 未登录 401",
@@ -294,37 +313,74 @@ r = await call(W, "/api/review/detail?id=../../rl", { headers: { Cookie: cookie 
 ok("详情挡路径穿越", r.status === 400 || r.status === 404, "got " + r.status);
 
 ghCalls.length = 0;
-const fdPub = new FormData();
-fdPub.append("id", ID);
-fdPub.append("note", "内容没问题，发布");
-r = await call(W, "/api/review/publish", { method: "POST", headers: { Cookie: cookie }, body: fdPub });
-ok("发布成功", r.status === 200 && r.json && r.json.ok === true, r.text.slice(0, 200));
+
+// ---- 审核通过 = 写进小号自己的 fork ----
+const fdApprove = new FormData();
+fdApprove.append("id", ID);
+fdApprove.append("note", "内容没问题");
+r = await call(W, "/api/review/approve", { method: "POST", headers: { Cookie: cookie }, body: fdApprove });
+ok("审核通过（写进小号 fork）", r.status === 200 && r.json && r.json.ok === true, r.text.slice(0, 300));
+const BRANCH = r.json && r.json.branch;
 
 const w = ghCalls.filter(c => c.t === "gh" && (c.method === "POST" || c.method === "PUT"));
+ok("  写进的是 fork（URL 里是小号 boringtip）",
+  w.length > 0 && w.every(c => c.url.indexOf("/repos/boringtip/") === 0),
+  JSON.stringify(w.map(c => c.url.slice(0, 70))));
 ok("  建了分支", w.some(c => c.url.includes("/git/refs")));
 ok("  传了 2 张图",
   w.filter(c => c.method === "PUT" && c.url.includes("/contents/") &&
     c.url.indexOf("list.txt") === -1).length === 2);
-ok("  写了 list.txt", w.some(c => c.url.includes("list.txt")));
-ok("  建了 PR", w.some(c => c.url.endsWith("/pulls")));
-ok("  全用小号 token",
-  w.length > 0 && w.every(c => c.auth === "Bearer ghp_FAKE_BOT_TOKEN"));
-
-// GitHub 缺 User-Agent 会直接 403（"Request forbidden by administrative rules"）。
-// 之前这里漏了头，线上发布一直失败 —— 用测试守住。
+ok("  改了 list.txt", w.some(c => c.url.includes("list.txt")));
+ok("  还没建 PR（那是「推送」那一步）", !w.some(c => c.url.endsWith("/pulls")));
 ok("  每次请求都带 User-Agent",
   w.length > 0 && w.every(c => c.userAgent && String(c.userAgent).length > 0),
   JSON.stringify(w.map(c => c.userAgent)));
+ok("  返回了 fork 分支链接", Boolean(r.json && r.json.forkUrl));
 
+r = await call(W, "/api/review/pending-branches", { headers: { Cookie: cookie } });
+ok("待推送列表里有这个分支",
+  r.json && (r.json.items || []).some(x => x.branch === BRANCH),
+  JSON.stringify(r.json && r.json.items));
+
+// ---- 推送 = 以 PR 形式提到主仓库 ----
+ghCalls.length = 0;
+const fdPush = new FormData();
+fdPush.append("branch", BRANCH);
+r = await call(W, "/api/review/push", { method: "POST", headers: { Cookie: cookie }, body: fdPush });
+ok("推送建 PR 成功", r.status === 200 && r.json && r.json.ok === true, r.text.slice(0, 300));
+
+const pw = ghCalls.filter(c => c.t === "gh");
+ok("  比对了分支差异", pw.some(c => c.url.includes("/compare/")));
+const prCall = pw.find(c => c.url.endsWith("/pulls"));
+ok("  建了 PR（提到主仓库）",
+  Boolean(prCall) && prCall.url.indexOf("/repos/Thomas455/") >= 0,
+  prCall && prCall.url);
+ok("  PR 用 fork 的分支当 head",
+  prCall && String(prCall.body || "").indexOf("boringtip:guest/") >= 0,
+  prCall && String(prCall.body || "").slice(0, 160));
+ok("  带上了 PR 链接", r.json && typeof r.json.prUrl === "string");
+ok("  带上了改动统计", r.json && r.json.commits >= 0 && r.json.filesChanged >= 0,
+  JSON.stringify({ c: r.json && r.json.commits, f: r.json && r.json.filesChanged }));
+ok("  识别出涉及的学院", r.json && (r.json.colleges || []).length > 0,
+  JSON.stringify(r.json && r.json.colleges));
+
+// 分支名校验：不能传任意分支来推
+const fdBad = new FormData();
+fdBad.append("branch", "main");
+r = await call(W, "/api/review/push", { method: "POST", headers: { Cookie: cookie }, body: fdBad });
+ok("  拒绝非 guest/ 分支", r.status === 400, "got " + r.status);
+
+// 投稿人能查到
 r = await call(W, "/api/guest/status?id=" + ID);
-ok("发布后 = published", r.json && r.json.status === "published", JSON.stringify(r.json));
-ok("  带 PR 链接", r.json && typeof r.json.prUrl === "string");
-ok("  带 PR 编号", r.json && r.json.prNumber === 999);
-ok("  带审核备注给投稿人", r.json && /没问题/.test(r.json.note || ""),
-  JSON.stringify(r.json));
+ok("推送后投稿状态 = pushed", r.json && r.json.status === "pushed", JSON.stringify(r.json));
+ok("  投稿人拿到 PR 链接", r.json && typeof r.json.prUrl === "string");
 
 r = await call(W, "/api/review/list", { headers: { Cookie: cookie } });
-ok("处理后队列空", r.json && (r.json.items || []).length === 0);
+// 新设计里「审核通过」不删条目，只打 approved 标记（方便你回头看）。
+// 它会一直留在列表里，直到你清理 —— 这里断言标记已生效。
+ok("审核通过的条目仍留在列表（带已通过标记）",
+  r.json && (r.json.items || []).some(x => x.id === ID && x.approved && x.approved.branch),
+  JSON.stringify((r.json && r.json.items || []).map(x => ({ id: x.id, ap: !!x.approved }))));
 
 /* ===== 6. 拒绝流程 ===== */
 const X = makeEnv();
