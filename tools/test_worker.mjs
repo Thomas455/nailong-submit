@@ -48,6 +48,10 @@ globalThis.fetch = async (input, init) => {
       return new Response(JSON.stringify({ ok: true }), { headers: H });
     if (method === "PUT" && p.includes("/contents/"))
       return new Response(JSON.stringify({ ok: true }), { headers: H });
+    // merge-upstream：approve 之前同步 fork 用它（缺了会导致 list.txt 基于旧版本，
+    // PR 里出现删除别人的行）
+    if (method === "POST" && p.endsWith("/merge-upstream"))
+      return new Response(null, { status: 204, headers: H });
     // compare：推送时用来比对分支相对 main 改了什么
     if (method === "GET" && p.includes("/compare/")) {
       return new Response(JSON.stringify({
@@ -343,6 +347,12 @@ ok("审核通过（写进小号 fork）", r.status === 200 && r.json && r.json.o
 const BRANCH = r.json && r.json.branch;
 
 const w = ghCalls.filter(c => c.t === "gh" && (c.method === "POST" || c.method === "PUT"));
+// 同步必须发生在**建分支之前** —— 否则 list.txt 会基于旧版本，PR 里会删掉别人的行
+const syncIdx = ghCalls.findIndex(c => c.url.includes("/merge-upstream"));
+const branchIdx = ghCalls.findIndex(c => c.url.includes("/git/refs"));
+ok("  先同步 fork 再建分支",
+  syncIdx >= 0 && branchIdx >= 0 && syncIdx < branchIdx,
+  "sync@" + syncIdx + " branch@" + branchIdx);
 ok("  写进的是 fork（URL 里是小号 boringtip）",
   w.length > 0 && w.every(c => c.url.indexOf("/repos/boringtip/") === 0),
   JSON.stringify(w.map(c => c.url.slice(0, 70))));

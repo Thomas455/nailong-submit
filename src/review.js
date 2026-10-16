@@ -215,7 +215,18 @@ async function pushToFork(m, env, { admin, adminNote }) {
   const branch = 'guest/' + stamp() + '-' + m.id.toLowerCase();
   const dir = `${WORKS_DIR}/${m.collegeDir}`;
 
-  // 1. 读 fork 上 main 的 sha
+  // 0. ★ 先把 fork 同步到主仓库最新
+  //
+  // 不做这一步会有个**静默的破坏**：updateList 读的是 fork 上的 list.txt，
+  // fork 一旦落后于主仓库（你自己之前合并过几次，fork 是那时候 fork 的），
+  // 它就会基于旧版本追加新作品 —— PR 的 diff 里会出现**删除别人的行**，
+  // 你一合并就把别人已发布的作品撤掉了，而且不会报任何错。
+  const synced = await syncFork(token, fork);
+  if (!synced) {
+    console.warn('pushToFork: fork 同步未成功，继续用现有版本（可能产生多余差异）');
+  }
+
+  // 1. 读 fork 上 main 的 sha（同步之后拿到的就是最新的）
   const ref = await gh(token, 'GET',
     `/repos/${fork.owner}/${fork.repo}/git/ref/heads/${REPO.branch}`);
   const baseSha = ref.object.sha;
@@ -250,6 +261,41 @@ async function pushToFork(m, env, { admin, adminNote }) {
     // 点进去就能看到，方便你手动调整
     forkUrl: `https://github.com/${fork.owner}/${fork.repo}/tree/${encodeURIComponent(branch)}`
   };
+}
+
+/* ============================================================
+   把 fork 的 main 同步到主仓库最新
+
+   用 GitHub 官方的 merge-upstream：它把主仓库的 main 合并进 fork 的 main。
+   返回 true = 确认已经是最新；false = 没能确认（继续，但可能有多余差异）。
+
+   ⚠️ 失败不阻断流程 —— 投稿是主要目的，同步只是保证差异干净。
+   409 = 有冲突（fork 上有改动没进主仓库），422 = 已经是最新了
+   ============================================================ */
+async function syncFork(token, fork) {
+  try {
+    const r = await fetch(`${GH_API}/repos/${fork.owner}/${fork.repo}/merge-upstream`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + token,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'nailong-submit-worker',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ branch: REPO.branch })
+    });
+
+    // 204 = 已经是最新的；200 = 刚同步完
+    if (r.status === 200 || r.status === 204) return true;
+
+    const txt = await r.text().catch(() => '');
+    console.warn('syncFork: HTTP', r.status, txt.slice(0, 160));
+    return false;
+  } catch (e) {
+    console.error('syncFork 异常', e && e.message);
+    return false;
+  }
 }
 
 /* ---- 改 list.txt：读现有内容 → 追加新作品 ---- */
