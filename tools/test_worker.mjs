@@ -17,7 +17,9 @@ globalThis.fetch = async (input, init) => {
   if (url.includes("ft07.com")) {
     let body = null;
     try { body = init && init.body ? JSON.parse(init.body) : null; } catch (e) {}
-    sctCalls.push({ url, method, body });
+    sctCalls.push({ url, method, body,
+      userAgent: (init && init.headers && (init.headers["User-Agent"] || init.headers["user-agent"])) || null,
+      contentType: (init && init.headers && (init.headers["Content-Type"] || init.headers["content-type"])) || null });
     return new Response(JSON.stringify({ code: 0, message: "", data: {} }),
       { status: 200, headers: { "Content-Type": "application/json" } });
   }
@@ -113,7 +115,6 @@ function makeEnv(over) {
     GITHUB_CLIENT_ID: "Iv1.testclientid",
     GITHUB_CLIENT_SECRET: "testsecret-do-not-use",
     ADMIN_LOGIN: "Thomas455",
-    SCT_UID: "12345",
     SCT_SENDKEY: "sctp12345tFAKEFAKEFAKE",
     RATE_LIMIT: "1800"
   }, over || {});
@@ -496,8 +497,14 @@ ok("游客投稿触发了推送", sctCalls.length === 1, "sctCalls=" + sctCalls.
 if (sctCalls.length) {
   const s = sctCalls[0];
   ok("  用 POST", s.method === "POST", s.method);
-  ok("  带上 uid（sendkey 以 sctp 开头时也要带上 uid）",
-    s.url.includes("12345"), s.url);
+  // URL 拼法照官方 SDK（serverchan-sdk）：**整串 sendkey** 当子域名，
+  // 不是「uid.push...send/<sendkey>.send」—— 那样和 SDK 不一致。
+  ok("  URL = https://<整串 sendkey>.push.ft07.com/send",
+    s.url === "https://sctp12345tFAKEFAKEFAKE.push.ft07.com/send", s.url);
+  ok("  带上了 User-Agent（漏了会被服务端 403）",
+    s.userAgent === "nailong-submit-worker", String(s.userAgent));
+  ok("  Content-Type 带 charset=utf-8（和官方 SDK 一致）",
+    s.contentType === "application/json;charset=utf-8", String(s.contentType));
   ok("  标签参数名是 tags（文档里是复数）",
     s.body && typeof s.body.tags === "string", JSON.stringify(Object.keys(s.body || {})));
   ok("  标签值 = 'submit of 奶龙'",
@@ -513,7 +520,7 @@ if (sctCalls.length) {
 }
 
 // 没配 SCT 时应该静默跳过，不影响投稿
-const NO_SCT = { ...makeEnv(), SCT_UID: "", SCT_SENDKEY: "" };
+const NO_SCT = { ...makeEnv(), SCT_SENDKEY: "" };
 const capNS = await solve(NO_SCT);
 sctCalls.length = 0;
 const fdNS = new FormData();

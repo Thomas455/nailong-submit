@@ -69,12 +69,11 @@
   //   GITHUB_CLIENT_SECRET   OAuth Client Secret
   //                         （还用于给会话 cookie 和小号 token 加密）
   //
-  //   SCT_UID               Server酱 的 uid（有人投稿时给你发微信）
-  //   SCT_SENDKEY           Server酱 的完整 sendkey（sctp<uid>t...）
+  //   SCT_SENDKEY           Server酱 的 sendkey（sctp<uid>t... 开头）
+  //                         有人投稿时给你发微信。只要这一个，uid 包含在里面。
   //                         ⚠️ 等于「谁能给你发消息」的钥匙，泄露了别人就能骚扰你
   //
   //   npx wrangler secret put GITHUB_CLIENT_SECRET
-  //   npx wrangler secret put SCT_UID
   //   npx wrangler secret put SCT_SENDKEY
   //
   // 小号 token **不在这里** —— 它由管理页「绑定小号」走 OAuth 换到，

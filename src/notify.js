@@ -18,15 +18,13 @@
    通知是锦上添花，不是主流程。
 
    ---- 环境变量 ----
-     SCT_UID      SendKey 页面给的 uid（形如 12345）
-     SCT_SENDKEY  SendKey 页面给的完整 sendkey（sctp12345t...）
+     SCT_SENDKEY  Server酱 的 sendkey（sctp<uid>t... 开头的是 Server酱³）
+                  ⚠️ 等于「谁能给你发消息」的钥匙，泄露了别人就能骚扰你
    ============================================================================ */
 
 // 防刷校验要复用学院名单和 json 助手
 import { COLLEGES } from './config.js';
 import { json } from './admin.js';
-
-const SEND_URL = 'https://push.ft07.com/send';
 
 // 通知里带上的固定标签。文档要求标签用竖线分隔（参数名 tags）。
 const TAG = 'submit of 奶龙';
@@ -35,18 +33,21 @@ const TAG = 'submit of 奶龙';
  * 发一条推送。不抛异常 —— 任何失败都吞掉并打日志。
  */
 export async function notify(env, { title, desp, short }) {
-  const uid = String(env.SCT_UID || '').trim();
   const sendkey = String(env.SCT_SENDKEY || '').trim();
 
-  if (!uid || !sendkey) {
+  if (!sendkey) {
     // 没配就是没配，别刷日志（每次投稿都刷一遍很吵）
     return { ok: false, skipped: true };
   }
 
-  // 少数情况下 sendkey 本身就带 uid，此时可以只靠 sendkey 推
+  // URL 拼法照官方 SDK（serverchan-sdk）：
+  //   sctp 开头的（Server酱³）→ https://<整串 sendkey>.push.ft07.com/send
+  //   老的 → https://sctapi.ftqq.com/<sendkey>.send
+  // ⚠️ sctp 那种是把**整串 sendkey**当子域名，不是只取 uid。
+  //   我最初写成「uid.push.ft07.com/send/<sendkey>.send」，那和 SDK 不一致。
   const url = sendkey.startsWith('sctp')
-    ? `${SEND_URL}/${encodeURIComponent(sendkey)}.send`
-    : `https://${encodeURIComponent(uid)}.push.ft07.com/send/${encodeURIComponent(sendkey)}.send`;
+    ? `https://${sendkey}.push.ft07.com/send`
+    : `https://sctapi.ftqq.com/${encodeURIComponent(sendkey)}.send`;
 
   const body = {
     title: title || '新投稿',
@@ -62,7 +63,14 @@ export async function notify(env, { title, desp, short }) {
 
     const r = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        // 官方 SDK 用的是 charset=utf-8，这里跟它一致
+        'Content-Type': 'application/json;charset=utf-8',
+        // ⚠️ User-Agent 显式带上。Workers 虽然会自动带 Cloudflare-Workers，
+        //    但不能指望 —— 本项目之前就在 GitHub API 上因为漏这个头被 403 过
+        //    （"Request forbidden by administrative rules"）。
+        'User-Agent': 'nailong-submit-worker'
+      },
       body: JSON.stringify(body),
       signal: ac.signal
     });

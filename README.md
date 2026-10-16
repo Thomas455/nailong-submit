@@ -224,17 +224,18 @@ npx wrangler r2 bucket create nailong-rate
 
 ### 6. 微信推送（有人投稿时通知你）
 
-去 [Server酱 SendKey 页面](https://sc3.ft07.com/sendkey) 拿 uid 和 sendkey，然后：
+去 [Server酱 SendKey 页面](https://sc3.ft07.com/sendkey) 拿 sendkey（`sctp<uid>t...` 开头的那串），然后：
 
 ```powershell
-npx wrangler secret put SCT_UID
 npx wrangler secret put SCT_SENDKEY
 ```
+
+只需要 sendkey 一个 —— uid 已经包含在里面了（`sctp(数字)t`，见官方 API 文档）。
 
 配好后有人投稿（游客或 GitHub 登录都算）就会给你发一条微信，
 消息里带投稿编号、学院、作品列表和留言，标签固定是 `submit of 奶龙`。
 
-> uid / sendkey 等于「谁能给你发消息」的钥匙，所以只走加密变量，
+> sendkey 等于「谁能给你发消息」的钥匙，所以只走加密变量，
 > **绝不写进代码或 git**。没配也不影响投稿 —— 推送会被静默跳过。
 
 ### 7. 部署
