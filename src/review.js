@@ -1,5 +1,5 @@
 import { requireAdmin, json } from './admin.js';
-import { GH_API, REPO, WORKS_DIR } from './guest.js';
+import { GH_API, REPO, WORKS_DIR } from './config.js';
 import { getBotToken } from './bot.js';
 
 /* ============================================================

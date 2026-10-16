@@ -28,21 +28,19 @@
    「魔数对、内容错」的畸形文件仍可能通过。要彻底消除得在 Worker 里跑
    图片解码重编码（引入 Wasm，吃 CPU 额度）。当前靠魔数 + 人工审核兜底。
 
+   ---- 这个模块不碰 GitHub ----
+   游客提交全程只读写 R2，**不调用任何 GitHub 接口、不需要小号 token**。
+   所以「还没绑定小号」时游客照样能投稿，只是管理员审核那步用不了。
+
    ---- 环境变量 ----
-     BOT_TOKEN          小号的 token（⚠️ 保密，GitHub PAT 或 OAuth token）
+     SUBMIT_BUCKET      R2，存待审的图片和元数据（唯一必需）
+     RATE_BUCKET        R2，存频控计数（可省略，省略就退回用 SUBMIT_BUCKET）
      GITHUB_CLIENT_SECRET  也用作人机验证题目的签名密钥（复用，不新增变量）
      RATE_LIMIT         每个 IP 的间隔秒数（默认 1800 = 30 分钟一次）
    ============================================================================ */
 
 // json 是 admin.js 里定义的共用工具
 import { json } from './admin.js';
-
-// GitHub API 的地址（review.js 写仓库时用）
-const GH_API = 'https://api.github.com';
-
-// 和主站 config.js 对应的仓库坐标。这个 Worker 只需要知道这些常量。
-const REPO = { owner: 'Thomas455', repo: 'nailong-university', branch: 'main' };
-const WORKS_DIR = 'works';
 
 // 硬上限（即使前端被绕过也生效）
 const MAX_FILES = 20;
@@ -501,4 +499,4 @@ const COLLEGES = [
   { name: '人工智能学院', dir: '人工智能学院' }
 ];
 
-export { COLLEGES, REPO, WORKS_DIR, GH_API, MAX_FILES };
+export { COLLEGES, MAX_FILES };
