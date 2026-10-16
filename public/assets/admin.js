@@ -18,6 +18,72 @@
   // 待推送区
   var stage = $('stage'), stageList = $('stageList'), stageMsg = $('stageMsg'),
       stageBranch = $('stageBranch');
+  // 小号绑定
+  var botStatus = $('botStatus'), botBind = $('botBind'), botUnbind = $('botUnbind');
+
+  /* ============================================================
+     小号绑定（OAuth）
+
+     为什么用 OAuth 而不是 fine-grained PAT：
+     PAT 的「Only select repositories」只能选 token 拥有者自己的仓库，
+     小号选不到主仓库 —— 这是产品限制，改设置也绕不开。
+     OAuth 的 public_repo 按仓库类型授权，没这个限制。
+     ============================================================ */
+
+  function loadBot() {
+    fetch('/api/bot/status', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j && j.bound && j.alive) {
+          botStatus.innerHTML = '小号：<b style="color:var(--go)">' + esc(j.login) + '</b> 已绑定';
+          botBind.hidden = true;
+          botUnbind.hidden = false;
+        } else if (j && j.bound) {
+          botStatus.innerHTML = '<span style="color:var(--warn)">绑定的账号 ' +
+            esc(j.login || '未知') + ' 的 token 已失效，需要重新绑定</span>';
+          botBind.hidden = false;
+          botUnbind.hidden = false;
+        } else {
+          botStatus.innerHTML = '<span style="color:var(--warn)">还没绑定小号 —— ' +
+            '「审核通过」和「推送」都需要它</span>';
+          botBind.hidden = false;
+          botUnbind.hidden = true;
+        }
+      })
+      .catch(function (e) {
+        botStatus.innerHTML = '<span style="color:var(--warn)">检查绑定状态失败：' +
+          esc(e.message) + '</span>';
+      });
+  }
+
+  botBind.addEventListener('click', function () {
+    var w = 620, h = 720;
+    var pop = window.open('/api/bot/login?nonce=' + nonce12(),
+      'nailong_bot_oauth',
+      'width=' + w + ',height=' + h +
+      ',left=' + Math.max(0, (screen.width - w) / 2) +
+      ',top=' + Math.max(0, (screen.height - h) / 2));
+    if (!pop) alert('弹窗被拦了，请允许本站弹窗后重试。');
+  });
+
+  botUnbind.addEventListener('click', function () {
+    if (!confirm('解绑小号？解绑后「审核通过」和「推送」都不能用了。')) return;
+    fetch('/api/bot/unbind', { method: 'POST', credentials: 'same-origin' })
+      .then(function () { loadBot(); })
+      .catch(function (e) { alert('解绑失败：' + e.message); });
+  });
+
+  // 回调页的结果
+  try {
+    if (window.BroadcastChannel) {
+      new BroadcastChannel('nailong-bot-auth').onmessage = function (e) {
+        var m = e.data;
+        if (!m || m.type !== 'nailong-bot-auth') return;
+        if (m.ok) { loadBot(); alert('小号 ' + m.login + ' 已绑定。'); }
+        else { alert('绑定失败：\n' + (m.error || '未知错误')); }
+      };
+    }
+  } catch (e) {}
 
   var current = null;     // 当前打开的投稿 { id, ... }
 
@@ -78,6 +144,7 @@
           whoEl.querySelector('b').textContent = j.login;
           load();
           loadStage();      // 待推送的分支
+          loadBot();        // 小号绑定状态
         } else {
           gate.hidden = false;
           board.hidden = true;

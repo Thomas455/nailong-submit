@@ -53,7 +53,7 @@ export async function guestRoutes(url, request, env) {
   if (url.pathname === '/api/guest/config') return guestConfig(env);
   // 出题接口：前端每次要答题时来拿一道新的
   if (url.pathname === '/api/guest/challenge') {
-    if (!env.BOT_TOKEN || !env.SUBMIT_BUCKET) {
+    if (!env.SUBMIT_BUCKET) {
       return json({ ok: false, error: '服务端还没配好' }, 503);
     }
     return json(await issueChallenge(env));
@@ -68,10 +68,11 @@ export async function guestRoutes(url, request, env) {
 }
 
 function guestConfig(env) {
-  // 不下发任何密钥 —— 这个接口只告诉前端「有没有配好」和用的哪套验证
+  // 不下发任何密钥 —— 只告诉前端「有没有配好」和用的哪套验证。
+  // 能不能投稿只看存储在不在；小号有没有绑定是审核页的事，不影响游客投稿。
   return json({
     captcha: 'math',
-    ready: Boolean(env.BOT_TOKEN && env.SUBMIT_BUCKET)
+    ready: Boolean(env.SUBMIT_BUCKET)
   });
 }
 
@@ -86,7 +87,7 @@ function guestConfig(env) {
      captchaChallenge  出题接口给的签名串
    ============================================================ */
 async function handleGuestSubmit(request, env) {
-  if (!env.BOT_TOKEN || !env.SUBMIT_BUCKET) {
+  if (!env.SUBMIT_BUCKET) {
     return json({ ok: false, error: '服务端还没配好，暂时无法投稿' }, 503);
   }
 

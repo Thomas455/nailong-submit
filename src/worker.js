@@ -1,9 +1,10 @@
 /* ============================================================================
    投稿站服务端入口（Cloudflare Worker）
 
-   这个 Worker 现在管三件事，全部在 src/ 下按职责分开：
+   这个 Worker 现在管四件事，全部在 src/ 下按职责分开：
 
      admin.js    管理员用 GitHub 账号登录（只读身份，不碰仓库）
+     bot.js      小号绑定：OAuth 换 token → 加密存 R2（替代原来的 PAT）
      guest.js    游客投稿：图片进 R2 暂存区，不碰仓库
      review.js   管理员审核：审核通过后才用小号把内容写进仓库
 
@@ -15,19 +16,21 @@
      RATE_BUCKET     R2，存频控计数（可省略，省略就退回用 SUBMIT_BUCKET）
 
      GITHUB_CLIENT_ID       OAuth App 的 Client ID
-     GITHUB_CLIENT_SECRET   Client Secret（也用作会话签名密钥）
+     GITHUB_CLIENT_SECRET   Client Secret
+                              同时用作：会话签名密钥 + 小号 token 的加密密钥
      ADMIN_LOGIN            允许进管理页的 GitHub 用户名
-
-     BOT_TOKEN              小号的 token（唯一会写仓库的凭据）
-     TURNSTILE_SITE_KEY     Turnstile 前端 site key（公开）
-     TURNSTILE_SECRET       Turnstile 服务端密钥
      RATE_LIMIT             同 IP 提交间隔秒数（默认 1800）
+
+   写仓库的小号 token **不在环境变量里** —— 它由管理页「绑定小号」
+   走 OAuth 换到，加密后存进 R2。这样不用再配一个 secret，
+   也避开了 fine-grained PAT 那个「只能选自己仓库」的限制。
 
    ============================================================================ */
 
 import { adminRoutes, json } from './admin.js';
 import { guestRoutes } from './guest.js';
 import { reviewRoutes } from './review.js';
+import { botRoutes } from './bot.js';
 
 export default {
   async fetch(request, env) {
@@ -52,6 +55,10 @@ export default {
       // /api/review/* —— 审核（每个接口内部自己查管理员身份）
       const review = await reviewRoutes(url, request, env);
       if (review) return withHeaders(review);
+
+      // /api/bot/* —— 小号绑定（OAuth 换 token，加密存 R2）
+      const bot = await botRoutes(url, request, env);
+      if (bot) return withHeaders(bot);
 
       // /api/guest/* —— 游客投稿
       const guest = await guestRoutes(url, request, env);

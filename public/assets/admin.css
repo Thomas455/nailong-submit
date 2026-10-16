@@ -31,6 +31,27 @@ a.mini:hover { background: var(--track); transform: translateY(-1px); }
 .empty b { display: block; font-size: 16px; margin-bottom: 6px; }
 .empty span { font-size: 13.5px; color: var(--muted); }
 
+/* ---------- 小号绑定状态 ---------- */
+.bot-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 12px; padding: 10px 13px; border-radius: 12px;
+  background: rgba(254, 206, 14, .06);
+  border: 1px solid var(--line);
+  font-size: 13px; color: var(--muted);
+}
+.bot-bar > span:first-child { margin-right: auto; }
+.bot-bar b { font-weight: 700; }
+
+button.mini.ghost-mini {
+  background: transparent;
+  border-color: rgba(255, 255, 255, .2);
+  color: var(--muted);
+}
+button.mini.ghost-mini:hover {
+  background: rgba(255, 255, 255, .07);
+  color: var(--fg);
+}
+
 /* ---------- 加载失败提示 ---------- */
 .list-err {
   margin: 0 0 14px; padding: 12px 14px; border-radius: 12px;

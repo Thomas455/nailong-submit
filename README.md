@@ -153,22 +153,36 @@ GitHub → Settings → Developer settings → **OAuth Apps** → New OAuth App
 
 > 如果你把仓库改成私有并把小号加成 collaborator，就不用绕这一圈了 ——
 > 但公开仓库 + fork 更简单，也更安全（小号权限更小）。
-### 2. 建小号（只有游客投稿需要）
+### 2. 配小号（只有游客投稿需要）
 
-游客投稿是用一个**小号**把内容发进主仓库的。这个小号需要：
+游客投稿是用一个**小号**把内容发进主仓库的。配置分三步：
 
-1. 注册一个独立的 GitHub 账号（**不要用你的主账号** —— 主账号有仓库所有权，
-   万一 token 泄露后果太大）
-2. **先 fork 主仓库**（Fork 按钮）。这一步是必须的 —— 小号不是主仓库成员，token 没法直接往主仓库写；但它对自己的 fork 有完整写权限。
-3. 给它一个 **Fine-grained personal access token**：
-   - Resource owner：小号自己
-   - Repository access：Only select repositories → 选 `nailong-university`
-   - Permissions → **Contents: Read and write**、**Pull requests: Read and write**
-   - 其余一律不给
-3. 设一个到期时间（建议 90 天，到期前重新签一个）
+1. **注册一个独立的小号**
+   不要用主账号 —— 主账号有仓库所有权，能改设置、能删仓库，万一 token 泄露后果太大。
 
-> 为什么不用主账号的小号？主账号对仓库有完全权限（能改设置、能删仓库）。
-> 小号只有 Contents/PR 两个权限，就算泄露别人也只能改作品文件。
+2. **把主仓库加成它的 collaborator**
+
+   主仓库 → **Settings** → **Collaborators** → **Add people** → 填小号用户名 → 邀请
+   → ⚠️ **用小号登录，打开邮箱点确认链接**（这一步最容易漏）
+
+3. **在管理页点「绑定小号」，用小号登录一次**
+
+   token 会被 **AES-GCM 加密**（密钥由 `GITHUB_CLIENT_SECRET` 派生）存进 R2，
+   之后「审核通过」和「推送」都由服务器用它代提交。
+
+> ⚠️ 第 3 步不是可选项：管理页会检查小号对主仓库有没有 `push` 权限，
+> 没有就绑定失败，并明确告诉你去加 collaborator。
+
+> **为什么不用 fine-grained personal access token？**
+> PAT 的「Only select repositories」**只能选 token 拥有者自己的仓库**——
+> 小号只有它自己的 fork，选不到主仓库，于是对主仓库的写操作全是 403。
+> 这是 PAT 的产品限制，改设置也绕不开。
+>
+> OAuth 的 `public_repo` 按「仓库类型」授权，没这个限制：
+> 小号只要是 collaborator，拿到的 token 就能写主仓库。
+
+> 为什么不用主账号？主账号权限太大，泄露后果严重。
+> 小号只是个 collaborator，就算泄露别人也只能改作品文件。
 
 ### 3. 配环境变量
 
@@ -178,7 +192,6 @@ GitHub → Settings → Developer settings → **OAuth Apps** → New OAuth App
 
 ```powershell
 npx wrangler secret put GITHUB_CLIENT_SECRET   # OAuth App 的 Client Secret
-npx wrangler secret put BOT_TOKEN              # 第 2 步的小号 token
 ```
 
 （也可以在 Dashboard → Worker → Settings → Variables and Secrets 里逐条添加，

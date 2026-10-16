@@ -45,6 +45,13 @@
       <a class="mini" href="index.html">投稿页</a>
     </div>
 
+    <!-- 小号绑定状态 -->
+    <div class="bot-bar" id="botBar">
+      <span id="botStatus">小号：检查中…</span>
+      <button class="mini" id="botBind" type="button" hidden>绑定小号</button>
+      <button class="mini ghost-mini" id="botUnbind" type="button" hidden>解绑</button>
+    </div>
+
     <!-- 加载失败的提示。放在这里而不是只写进抽屉（抽屉是关着的），
          否则出错时页面一片空白，看不出任何原因。 -->
     <p class="list-err" id="listErr" hidden></p>

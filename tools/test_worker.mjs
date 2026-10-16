@@ -71,6 +71,24 @@ globalThis.fetch = async (input, init) => {
   return realFetch(input, init);
 };
 
+
+/* 模拟「管理页已绑定小号」—— 走真实的加密逻辑把 token 写进 R2 */
+async function bindBot(env, token, login) {
+  // 复刻 bot.js 的逻辑：AES-GCM + SHA-256(Client Secret) 作密钥
+  const digest = await crypto.subtle.digest('SHA-256',
+    new TextEncoder().encode(env.GITHUB_CLIENT_SECRET));
+  const key = await crypto.subtle.importKey('raw', digest,
+    { name: "AES-GCM" }, false, ["encrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv }, key, new TextEncoder().encode(token));
+  const out = new Uint8Array(12 + ct.byteLength);
+  out.set(iv, 0); out.set(new Uint8Array(ct), 12);
+  await env.SUBMIT_BUCKET.put("bot/token.enc", out);
+  await env.SUBMIT_BUCKET.put("bot/meta.json",
+    JSON.stringify({ login, boundAt: Date.now() }));
+}
+
 function makeEnv(over) {
   const bucket = new MemR2();
   return Object.assign({
@@ -81,7 +99,6 @@ function makeEnv(over) {
     GITHUB_CLIENT_ID: "Iv1.testclientid",
     GITHUB_CLIENT_SECRET: "testsecret-do-not-use",
     ADMIN_LOGIN: "Thomas455",
-    BOT_TOKEN: "ghp_FAKE_BOT_TOKEN",
     RATE_LIMIT: "1800"
   }, over || {});
 }
@@ -312,6 +329,9 @@ ok("  预览图带 cookie 取到", r.status === 200, "got " + r.status);
 r = await call(W, "/api/review/detail?id=../../rl", { headers: { Cookie: cookie } });
 ok("详情挡路径穿越", r.status === 400 || r.status === 404, "got " + r.status);
 
+// 模拟管理页已绑定小号（真实流程是 OAuth 换 token 后加密存 R2）
+await bindBot(W, "ghp_FAKE_BOT_TOKEN", "boringtip");
+
 ghCalls.length = 0;
 
 // ---- 审核通过 = 写进小号自己的 fork ----
@@ -402,15 +422,34 @@ r = await call(X, "/api/guest/status?id=" + ID2);
 ok("  投稿人看到 rejected", r.json && r.json.status === "rejected", JSON.stringify(r.json));
 ok("  投稿人看到拒绝原因", r.json && /不合适/.test(r.json.note || ""));
 
-/* ===== 7. 未配置时挡住 ===== */
-const Y = makeEnv({ BOT_TOKEN: "" });
-r = await call(Y, "/api/guest/submit", {
-  method: "POST", body: fdOf({ college: COLLEGE }, [{ name: "z.webp" }]) });
-ok("BOT_TOKEN 没配 → 503", r.status === 503, "got " + r.status);
+/* ===== 7. 没绑小号 / 没配存储时的行为 ===== */
 
-const Z = makeEnv({ BOT_TOKEN: "" });
-r = await call(Z, "/api/guest/challenge", {
-  method: "POST", body: fdOf({ college: COLLEGE }, [{ name: "z.webp" }]) });
-ok("BOT_TOKEN 没配 → 出题接口 503", r.status === 503, "got " + r.status);
+// 没绑小号 → approve 要明确提示，而不是报一堆 GitHub 错误
+const NB = makeEnv();
+const capNB = await solve(NB);
+const fdNB = new FormData();
+fdNB.append("id", "AAAAAA");
+fdNB.append("college", COLLEGE);
+fdNB.append("captchaAnswer", capNB.answer);
+fdNB.append("captchaChallenge", capNB.challenge);
+fdNB.append("files", new File([new Uint8Array(PNG)], "x.webp", { type: "image/webp" }));
+r = await call(NB, "/api/guest/submit", { method: "POST", body: fdNB });
+const idNB = r.json && r.json.id;
+ok("没绑小号也能先投稿（游客投稿不依赖小号）", r.status === 200, "got " + r.status);
+
+if (idNB) {
+  const fdA = new FormData();
+  fdA.append("id", idNB);
+  r = await call(NB, "/api/review/approve", { method: "POST", headers: { Cookie: cookie }, body: fdA });
+  ok("  但「审核通过」会提示先绑定小号",
+    r.json && /绑定小号/.test(r.json.error || ""), JSON.stringify(r.json));
+}
+
+// 真的没配存储时才挡
+const NOSTORE = { ...makeEnv(), SUBMIT_BUCKET: undefined };
+r = await call(NOSTORE, "/api/guest/config");
+ok("没配存储时 config 返回 ready:false", r.json && r.json.ready === false);
+r = await call(NOSTORE, "/api/guest/challenge");
+ok("没配存储时出题接口 503", r.status === 503, "got " + r.status);
 
 console.log("__RESULT__" + JSON.stringify(out));

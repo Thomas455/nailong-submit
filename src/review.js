@@ -1,5 +1,25 @@
 import { requireAdmin, json } from './admin.js';
 import { GH_API, REPO, WORKS_DIR } from './guest.js';
+import { getBotToken } from './bot.js';
+
+/* ============================================================
+   拿小号的 token
+
+   来源是管理页「绑定小号」时用 OAuth 换来的（加密存在 R2 里）。
+
+   为什么不用 fine-grained PAT：
+   PAT 的 "Only select repositories" **只能选 token 拥有者自己的仓库**。
+   小号只有它自己的 fork，选不到主仓库，所以对主仓库的写操作全是 403。
+   OAuth 的 public_repo 按「仓库类型」授权，没这个限制 ——
+   小号只要是 collaborator，token 就能写主仓库。
+   ============================================================ */
+async function botToken(env) {
+  const t = await getBotToken(env);
+  if (!t) {
+    throw new Error('还没绑定小号。请到管理页点「绑定小号」，用小号登录一次。');
+  }
+  return t;
+}
 
 /* ============================================================================
    审核：两个动作
@@ -23,7 +43,7 @@ import { GH_API, REPO, WORKS_DIR } from './guest.js';
                                  └──[推送]──> 主仓库的 PR
 
    环境变量：
-     BOT_TOKEN        小号的 token（⚠️ 保密）
+     （没有 token 类环境变量 —— 小号由管理页 OAuth 绑定，token 加密存 R2）
      BOT_FORK_OWNER   小号用户名。不配就用 token 自动反查
      BOT_FORK_REPO    fork 的仓库名，默认和主仓库同名
    ============================================================================ */
@@ -158,7 +178,7 @@ async function image(request, env, url) {
 async function approve(request, env) {
   const admin = await requireAdmin(request, env);
   if (!admin) return unauthorized();
-  if (!env.BOT_TOKEN) return json({ ok: false, error: '服务端没配 BOT_TOKEN' }, 503);
+  if (!env.SUBMIT_BUCKET) return json({ ok: false, error: '未配置存储' }, 503);
 
   let form;
   try { form = await request.formData(); } catch (e) {
@@ -190,7 +210,7 @@ async function approve(request, env) {
 
 /* ---- 把作品写进小号的 fork ---- */
 async function pushToFork(m, env, { admin, adminNote }) {
-  const token = env.BOT_TOKEN;
+  const token = await botToken(env);
   const fork = await forkRepo(env);
   const branch = 'guest/' + stamp() + '-' + m.id.toLowerCase();
   const dir = `${WORKS_DIR}/${m.collegeDir}`;
@@ -269,7 +289,7 @@ async function updateList(token, fork, dir, uploaded, branch) {
 async function push(request, env) {
   const admin = await requireAdmin(request, env);
   if (!admin) return unauthorized();
-  if (!env.BOT_TOKEN) return json({ ok: false, error: '服务端没配 BOT_TOKEN' }, 503);
+  if (!env.SUBMIT_BUCKET) return json({ ok: false, error: '未配置存储' }, 503);
 
   let form;
   try { form = await request.formData(); } catch (e) {
@@ -283,7 +303,7 @@ async function push(request, env) {
   }
 
   const fork = await forkRepo(env);
-  const token = env.BOT_TOKEN;
+  const token = await botToken(env);
 
   // 这个分支得真的存在
   let head;
@@ -469,7 +489,7 @@ async function forkOwner(env) {
   const cached = forkOwnerCache.get('o');
   if (cached) return cached;
 
-  const u = await gh(env.BOT_TOKEN, 'GET', '/user');
+  const u = await gh(await botToken(env), 'GET', '/user');
   const login = u && u.login;
   if (!login) throw new Error('无法确定小号用户名：GitHub 没返回 login');
   forkOwnerCache.set('o', login);
@@ -497,7 +517,7 @@ const NEEDED = [
 ];
 
 function hintFor(path, status) {
-  if (status === 401) return 'BOT_TOKEN 无效或已过期，需要重新生成。';
+  if (status === 401) return '小号的 token 无效或已过期，重新绑定一次小号。';
   if (status === 404) {
     return '找不到资源。注意：小号必须**先 fork 这个仓库**，' +
            '而且 fork 的仓库名要和主仓库一样（当前期望 ' + REPO.repo + '）。';
