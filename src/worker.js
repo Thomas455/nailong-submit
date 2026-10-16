@@ -92,11 +92,20 @@ export default {
 
       return withHeaders(new Response('Not found', { status: 404 }));
     } catch (e) {
-      // 抛错时不要把内部细节漏给访客，但日志要留
+      // 日志里留完整堆栈
       console.error('Worker error:', e && e.stack ? e.stack : e);
+
+      // 管理接口（你自己在用）→ 把真实错误带回去，否则永远只能看到
+      // 「服务端出错了」这种废话，排查全靠猜。游客接口仍然只给笼统提示。
+      const isAdminApi = url.pathname.startsWith('/api/review/') ||
+                         url.pathname.startsWith('/api/admin/');
+      const detail = e && e.message ? String(e.message) : String(e);
       return withHeaders(json({
         ok: false,
-        error: '服务端出错了，请稍后再试'
+        error: isAdminApi
+          ? '服务端出错了：' + detail
+          : '服务端出错了，请稍后再试',
+        detail: isAdminApi ? detail : undefined
       }, 500));
     }
   }

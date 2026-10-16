@@ -43,31 +43,48 @@ async function listPending(request, env) {
 
   const out = [];
   // R2 的 list() 返回 Promise，要先 await 才能 for await。
-  // 直接写 `for await (... of bucket.list())` 会因为「没 await 就不是可迭代对象」而报错。
   //
-  // 不用 delimiter：带 delimiter 时 R2 迭代出来的是「前缀」而不是对象条目，
-  // 各家实现对 prefixes/objects 的处理略有出入。干脆列出全部 key，
-  // 自己从 key 里推出投稿编号 —— 这样行为最可预测。
-  const listing = await env.SUBMIT_BUCKET.list({ prefix: '', cursor: undefined });
+  // 这里不用 for await 遍历，改用 .objects 数组逐页处理 ——
+  // 原因：真实 R2 的异步迭代器在游标翻页时可能抛异常，而这个接口是
+  // 管理页的核心，出错就等于「管理页整个挂掉」。逐页 + 显式 try/catch
+  // 更可控，而且能顺手处理 1000 条/页的上限。
   const seen = new Set();
+  let cursor;
 
-  for await (const obj of listing) {
-    const key = obj.key || '';
-    const slash = key.indexOf('/');
-    if (slash <= 0) continue;                   // 顶层 key（rl/xxx 这类）不是投稿
-    const id = key.slice(0, slash);
-    if (!/^[0-9A-Z]{6}$/.test(id)) continue;     // 跳过 rl/、done/ 之类
-    if (!key.endsWith('/_meta.json')) continue;  // 只看元数据，不重复处理图片
-    if (seen.has(id)) continue;
-    seen.add(id);
+  try {
+    do {
+      const page = await env.SUBMIT_BUCKET.list({ prefix: '', cursor });
+      const objects = (page && page.objects) || [];
+      if (!objects.length) break;
 
-    const meta = await env.SUBMIT_BUCKET.get(`${id}/_meta.json`);
-    if (!meta) continue;
-    try {
-      const m = JSON.parse(await meta.text());
-      m.id = id;
-      out.push(m);
-    } catch (e) { /* 坏数据，跳过 */ }
+      for (const obj of objects) {
+        const key = (obj && obj.key) || '';
+        const slash = key.indexOf('/');
+        if (slash <= 0) continue;                    // 顶层 key（rl/xxx 这类）
+        const id = key.slice(0, slash);
+        if (!/^[0-9A-Z]{6}$/.test(id)) continue;      // 跳过 rl/、done/ 之类
+        if (!key.endsWith('/_meta.json')) continue;   // 只看元数据，不重复处理图片
+        if (seen.has(id)) continue;
+        seen.add(id);
+
+        try {
+          const meta = await env.SUBMIT_BUCKET.get(`${id}/_meta.json`);
+          if (!meta) continue;
+          const m = JSON.parse(await meta.text());
+          m.id = id;
+          out.push(m);
+        } catch (e) {
+          // 单条读失败不影响其它条目
+          console.error('listPending: 读取', id, '失败', e && e.message);
+        }
+      }
+
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+  } catch (e) {
+    // 列 R2 本身失败 —— 记日志，但把已经拿到的部分返回，
+    // 免得整个管理页因为一条坏数据就打不开
+    console.error('listPending: 列举 R2 失败', e && e.message);
   }
 
   // 新的在前
