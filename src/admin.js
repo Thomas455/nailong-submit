@@ -319,16 +319,19 @@ async function fetchLogin(token) {
 /* ============================================================
    会话查询（管理页刷新后用来恢复登录态）
    ============================================================ */
-function handleSession(request, env) {
-  const login = verifySession(request, env);
+async function handleSession(request, env) {
+  const login = await verifySession(request, env);
   return json({ loggedIn: Boolean(login), login });
 }
 
 /**
- * 验证会话 cookie：签名 + 过期 + 仍在白名单。
- * 任何一项不过就返回 null。全部同步 —— HMAC 密钥在 Worker 启动时就备好了。
+ * 验证会话 cookie：签名 + 过期 + 仍在白名单。任一项不过返回 null。
+ *
+ * ⚠️ 这里是 **async** 的。原来用 crypto.subtle 的同步版（importKeySync/signSync）
+ * 来做同步签名，但那两个 API 是比较新的，Workers 运行时上不一定有 ——
+ * 线上就因为拿不到签名而 500 了。改用标准的异步 Web Crypto（到处都支持）。
  */
-function verifySession(request, env) {
+async function verifySession(request, env) {
   const raw = readCookie(request, SESSION_COOKIE);
   if (!raw) return null;
   const [login, ts, sig] = raw.split('.');
@@ -340,17 +343,18 @@ function verifySession(request, env) {
   // 白名单先查：把你从 ADMIN_LOGIN 删掉后，旧 cookie 立刻失效
   if (!isAdmin(login, env)) return null;
 
-  // 签名是同步 HMAC（见 signSessionMemo）。签名不过 → 未登录。
-  const want = signMemo(`${login}.${ts}`, env);
+  const want = await hmac(`${login}.${ts}`, env);
   return timingSafeEqual(want, sig) ? login : null;
 }
 
 /**
  * 管理接口的统一入口检查。返回登录名，未登录返回 null。
  * 调用方据此返回 401。
+ *
+ * 注意是 async —— 调它的地方都要 await。
  */
-export function requireAdmin(request, env) {
-  return verifySession(request, env);
+export async function requireAdmin(request, env) {
+  return await verifySession(request, env);
 }
 
 /* ============================================================
@@ -366,32 +370,37 @@ export function isAdmin(login, env) {
 }
 
 /* ------------------------------------------------------------
-   签名工具：同步 HMAC-SHA256
+   签名工具：HMAC-SHA256（标准异步 Web Crypto）
 
-   用 Web Crypto 的 sync 版（signSync），因为会话验证发生在
-   每个管理请求的同步路径上。密钥由 GITHUB_CLIENT_SECRET 派生 ——
-   不用新增环境变量，也不必把 secret 存进 KV。
-   secret 没配时用一个固定的占位串（此时 ADMIN_LOGIN 若也没配，
+   密钥由 GITHUB_CLIENT_SECRET 派生 —— 不用新增环境变量。
+   secret 没配时用一个固定的占位串（此时若 ADMIN_LOGIN 也没配，
    isAdmin() 会一律拒绝，所以不会因为这个占位符产生绕过）。
+
+   ⚠️ 不要改回 crypto.subtle 的 **同步** 版（importKeySync / signSync）。
+   那两个 API 比较新，Workers 运行时上不一定有；线上就因为拿不到签名
+   导致 signSession 抛错、整个登录 500。标准异步版到处都支持。
    ------------------------------------------------------------ */
 const hmacKeyCache = new Map();
 
-function getHmacKey(env) {
+async function getHmacKey(env) {
   const secret = env.GITHUB_CLIENT_SECRET || 'no-secret-configured';
   if (hmacKeyCache.has(secret)) return hmacKeyCache.get(secret);
 
-  const key = crypto.subtle.importKeySync
-    ? crypto.subtle.importKeySync('raw', new TextEncoder().encode(secret),
-        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
-    : null;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
   hmacKeyCache.set(secret, key);
   return key;
 }
 
-function signMemo(msg, env) {
-  const key = getHmacKey(env);
-  if (!key || !crypto.subtle.signSync) return '';   // 拿不到签名能力 → 视为不匹配
-  const sig = crypto.subtle.signSync('HMAC', key, new TextEncoder().encode(msg));
+// 返回小写十六进制签名
+async function hmac(msg, env) {
+  const key = await getHmacKey(env);
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(msg));
   return Array.from(new Uint8Array(sig))
     .map((b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -406,7 +415,7 @@ function timingSafeEqual(a, b) {
 }
 
 async function signSession(login, ts, env) {
-  const sig = signMemo(`${login}.${ts}`, env);
+  const sig = await hmac(`${login}.${ts}`, env);
   if (!sig) throw new Error('无法生成会话签名');
   return `${login}.${ts}.${sig}`;
 }

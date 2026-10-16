@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 
 // ============================================================================
 // 极简 R2 内存实现（只为跑测试）
@@ -66,28 +65,5 @@ class MemR2 {
     };
   }
 }
-
-// ============================================================================
-// 让 Node 的 crypto.subtle 支持 Workers 里的同步 HMAC（admin.js 在用）
-// ============================================================================
-const RAWKEYS = new WeakMap();
-const _origImportKey = crypto.subtle.importKey.bind(crypto.subtle);
-crypto.subtle.importKey = async function (alg, keyData, algs, ext, usages) {
-  const k = await _origImportKey(alg, keyData, algs, ext, usages);
-  RAWKEYS.set(k, Buffer.from(keyData));
-  return k;
-};
-crypto.subtle.importKeySync = function (alg, keyData) {
-  const k = { __raw: Buffer.from(keyData), __alg: alg };
-  RAWKEYS.set(k, k.__raw);
-  return k;
-};
-crypto.subtle.signSync = function (alg, key, data) {
-  const raw = key.__raw || RAWKEYS.get(key);
-  if (!raw) throw new Error("signSync: no raw key");
-  const mac = crypto.createHmac("sha256", Buffer.from(raw))
-    .update(Buffer.from(data)).digest();
-  return new Uint8Array(mac).buffer;
-};
 
 export { MemR2 };

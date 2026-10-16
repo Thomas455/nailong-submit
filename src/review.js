@@ -38,7 +38,7 @@ function unauthorized() {
    待审列表
    ============================================================ */
 async function listPending(request, env) {
-  if (!requireAdmin(request, env)) return unauthorized();
+  if (!(await requireAdmin(request, env))) return unauthorized();
   if (!env.SUBMIT_BUCKET) return json({ ok: false, error: '未配置存储' }, 503);
 
   const out = [];
@@ -79,7 +79,7 @@ async function listPending(request, env) {
    单条详情（管理页预览用，带图片直链）
    ============================================================ */
 async function detail(request, env, url) {
-  if (!requireAdmin(request, env)) return unauthorized();
+  if (!(await requireAdmin(request, env))) return unauthorized();
   const id = String(url.searchParams.get('id') || '').trim();
   if (!/^[0-9A-Z]{6}$/.test(id)) return json({ ok: false, error: '编号不对' }, 400);
 
@@ -95,7 +95,7 @@ async function detail(request, env, url) {
 
 // 单独取图（管理页 <img> 用）。必须登录。
 async function image(request, env, url) {
-  if (!requireAdmin(request, env)) return new Response('unauthorized', { status: 401 });
+  if (!(await requireAdmin(request, env))) return new Response('unauthorized', { status: 401 });
   const id = String(url.searchParams.get('id') || '');
   const name = String(url.searchParams.get('name') || '');
   // 文件名必须严格等于元数据里记录的那个，不能只靠参数（防路径穿越）
@@ -120,7 +120,7 @@ async function image(request, env, url) {
    发布
    ============================================================ */
 async function publish(request, env) {
-  const admin = requireAdmin(request, env);
+  const admin = await requireAdmin(request, env);
   if (!admin) return unauthorized();
   if (!env.BOT_TOKEN) return json({ ok: false, error: '服务端没配 BOT_TOKEN' }, 503);
 
@@ -242,7 +242,7 @@ async function pushToRepo(m, env, { admin, adminNote, skipPR }) {
    拒绝
    ============================================================ */
 async function reject(request, env) {
-  if (!requireAdmin(request, env)) return unauthorized();
+  if (!(await requireAdmin(request, env))) return unauthorized();
   let form;
   try { form = await request.formData(); } catch (e) {
     return json({ ok: false, error: '请求不对' }, 400);

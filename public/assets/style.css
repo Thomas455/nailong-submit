@@ -407,3 +407,23 @@ body::before {
   .step, .head, .log { animation: none; }
   .btn, .college, .drop, .file .rm { transition: none; }
 }
+
+/* ============================================================================
+   [hidden] 兜底 —— 必须放在文件最末尾
+
+   为什么需要这条：
+   元素只要带了 class（比如 .btn 的 display:inline-flex），而这条
+   [hidden] 兜底规则又排在它前面，**同特异性下后者会赢**，于是
+   el.hidden = true 完全不起作用 —— 按钮还留在页面上。
+
+   这不是理论问题：线上就因为这个，游客模式下的「退出登录」按钮
+   明明设了 hidden 却照样显示。
+
+   为什么原来那条不管用：
+   文件开头那条 `[hidden] { display: none; }` 出现在 .btn 规则**之前**，
+   同为 (0,1,0) 特异性，后者（.btn）胜出。
+
+   放到最后 + 用 !important，才能真正盖住所有 display 声明。
+   （!important 只用在这一条兜底规则上，不影响其他样式。）
+   ============================================================================ */
+[hidden] { display: none !important; }
