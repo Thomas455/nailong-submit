@@ -141,6 +141,7 @@ async function handleGuestSubmit(request, env, ctx) {
 
   let total = 0;
   const cleaned = [];
+  const seenNames = new Set();          // 同一次提交里的重名检测
   for (const f of files) {
     if (f.size > MAX_FILE_BYTES) {
       return json({ ok: false, error: '单张不能超过 2MB' }, 413);
@@ -151,6 +152,22 @@ async function handleGuestSubmit(request, env, ctx) {
     }
     const rec = await sanitizeFile(f);
     if (!rec.ok) return json({ ok: false, error: rec.error }, 400);
+
+    // ⚠️ 同一次提交里不能有重名。
+    // 重名的后果不是报错，而是**后一张把前一张覆盖掉** ——
+    // R2 里存的是同一个 key，图上去了但只剩最后一张，还不报任何错。
+    // 用 Set 而不是数组：文件名可能上千次比较，Set 是 O(1)。
+    //
+    // 用 toLowerCase() 比较，和 GitHub / Windows / macOS 的行为一致 ——
+    // 那三个环境下 A.webp 和 a.webp 是同一个文件。
+    const key = rec.name.toLowerCase();
+    if (seenNames.has(key)) {
+      return json({
+        ok: false,
+        error: '有重名文件：' + rec.name + '。请改名后再提交（同一学院里文件名不能重复）。'
+      }, 400);
+    }
+    seenNames.add(key);
     cleaned.push(rec);
   }
 

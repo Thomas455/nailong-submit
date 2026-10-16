@@ -208,6 +208,12 @@ async function approve(request, env) {
   try {
     const res = await pushToFork(m, env, { admin, adminNote });
 
+    // 重名被拦下：**不要**写 _approved.json。
+    // 写了的话这条会算进「已审核通过待推送」，推送时又被重放一遍。
+    if (res.rejected) {
+      return json({ ok: false, error: res.reason, nameClash: true }, 409);
+    }
+
     // 记一笔，方便「推送」时列出待推分支
     await env.SUBMIT_BUCKET.put(`${id}/_approved.json`, JSON.stringify({
       at: Date.now(), by: admin, adminNote,
@@ -256,6 +262,28 @@ async function pushToFork(m, env, { admin, adminNote }) {
     `/repos/${fork.owner}/${fork.repo}/git/ref/heads/${REPO.branch}`);
   const baseSha = ref.object.sha;
 
+  // 1.5 ★ 重名检查：目标目录里已经有同名文件就拒绝
+  //
+  // 为什么必须在这里挡：
+  // 下面那个 PUT /contents/<路径> **不带 sha 参数**时，GitHub 的行为是
+  // 「文件不存在就新建，已存在就覆盖」—— 也就是说两个学生给作品起同一个
+  // 名字（比如都叫「我的画.jpg」），**后审核的那张会把先上传的覆盖掉**，
+  // 而且不报任何错、list.txt 里还会出现两行指向同一个文件。
+  //
+  // 这一步放在同步之后：同步保证读到的是主仓库的最新内容，
+  // 否则可能漏掉别人刚合并进来的同名文件。
+  const clash = await findNameClash(token, fork, dir, m.files);
+  if (clash) {
+    return {
+      branch: REPO.branch,
+      files: [],
+      forkFull: `${fork.owner}/${fork.repo}`,
+      forkUrl: `https://github.com/${fork.owner}/${fork.repo}/tree/${REPO.branch}`,
+      rejected: true,
+      reason: clash
+    };
+  }
+
   // 2. 传图 + 更新 list.txt，都落在 main 上
   const uploaded = [];
   for (const f of m.files) {
@@ -281,6 +309,48 @@ async function pushToFork(m, env, { admin, adminNote }) {
     // 点进去就能看到，方便你手动调整
     forkUrl: `https://github.com/${fork.owner}/${fork.repo}/tree/${REPO.branch}`
   };
+}
+
+/* ============================================================
+   重名检查：目标目录里已经有同名文件吗
+
+   返回 null = 没冲突；返回字符串 = 冲突说明（直接给管理员看）
+
+   为什么用「列目录」而不是「逐个查文件」：
+   GET /contents/<dir> 一次就能拿到整个目录的清单，
+   而逐文件查要 N 次请求（GitHub API 有速率限制）。
+
+   ⚠️ 大小写不敏感比较：GitHub、Windows、macOS 上
+   A.webp 和 a.webp 是同一个文件，用 === 比会漏掉这种情况。
+   ============================================================ */
+async function findNameClash(token, fork, dir, files) {
+  if (!files || !files.length) return null;
+
+  let listing = [];
+  try {
+    listing = await gh(token, 'GET',
+      `/repos/${fork.owner}/${fork.repo}/contents/${enc(dir)}` +
+      `?ref=${encodeURIComponent(REPO.branch)}`, undefined, true);
+  } catch (e) {
+    // 目录还不存在（这个学院第一次有人投稿）→ 不可能有冲突
+    console.warn('findNameClash: 列目录失败，按无冲突处理', e && e.message);
+    return null;
+  }
+  if (!Array.isArray(listing)) return null;
+
+  // list.txt 是我们自己维护的索引，不参与重名判断
+  const existing = new Set(
+    listing
+      .filter((it) => it && it.type === 'file' && it.name !== 'list.txt')
+      .map((it) => String(it.name).toLowerCase())
+  );
+
+  const dup = files.find((f) => existing.has(String(f.name).toLowerCase()));
+  if (!dup) return null;
+
+  return '学院目录里已经有叫「' + dup.name + '」的作品了。\n' +
+         '请把这次的作品改名，或在投稿时换个名字重新提交 ——\n' +
+         '直接通过的话会把原来那张**覆盖掉**，而且不会有任何提示。';
 }
 
 /* ============================================================

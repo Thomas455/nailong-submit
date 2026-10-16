@@ -8,6 +8,8 @@ const COLLEGE2 = "人文学院";
 
 const ghCalls = [];
 const sctCalls = [];      // Server酱 推送调用记录
+// 假 GitHub 的「学院目录内容」。测试可以改它来模拟重名/空目录。
+let dirListing = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
   const url = typeof input === "string" ? input : input.url;
@@ -54,6 +56,12 @@ globalThis.fetch = async (input, init) => {
       return new Response(JSON.stringify({
         content: Buffer.from("旧A.webp\n旧B.webp\n").toString("base64"),
         sha: "listsha999" }), { headers: H });
+    // 目录列举：findNameClash 用它查重名。
+    // 默认返回一个「已经有 我的画.webp」的目录 ——
+    // 这样才能测出重名拦截；要模拟空目录就设 dirListing = []。
+    if (method === "GET" && p.includes("/contents/") && !/\/contents\/[^?]*\./.test(p)) {
+      return new Response(JSON.stringify(dirListing), { headers: H });
+    }
     if (method === "GET" && /\/contents\//.test(p))
       return new Response(JSON.stringify({ message: "Not Found" }), { status: 404, headers: H });
     if (method === "POST" && p.endsWith("/git/refs"))
@@ -735,5 +743,136 @@ r = await call(RL3, "/api/notify/gh-submission", {
   body: JSON.stringify(ghPayload)
 });
 ok("★ 被 400 拒掉的请求不占用频控额度", r.status === 200, "got " + r.status);
+
+/* ===== 12. 文件名重名检查 =====
+   两处：投稿时（同一次提交内部重名）、审核写入时（目标目录已有同名文件）。
+   不挡的后果都是**静默覆盖** —— 不报错，但先上传的那张没了。 */
+
+// ---- 12a. 同一次提交内部重名 ----
+{
+  const D1 = makeEnv();
+  const capD = await solve(D1);
+  dirListing = [];
+  const fdDup = new FormData();
+  fdDup.append("college", COLLEGE);
+  fdDup.append("captchaAnswer", capD.answer);
+  fdDup.append("captchaChallenge", capD.challenge);
+  // 两张都叫「我的画」，只是后缀不同 —— 消毒后扩展名由魔数决定，
+  // 所以会撞成同一个文件名
+  fdDup.append("files", new File([new Uint8Array(PNG)], "我的画.png", { type: "image/png" }));
+  fdDup.append("files", new File([new Uint8Array(PNG)], "我的画.jpg", { type: "image/jpeg" }));
+  r = await call(D1, "/api/guest/submit", { method: "POST", body: fdDup });
+  ok("★ 同一次提交里文件名重复 → 拒绝", r.status === 400, "got " + r.status);
+  ok("  错误信息说清了是重名",
+    r.json && /重名/.test(r.json.error || ""), JSON.stringify(r.json));
+
+  // 改成不同名字应该放过
+  const D2 = makeEnv();
+  const capD2 = await solve(D2);
+  const fdOk = new FormData();
+  fdOk.append("college", COLLEGE);
+  fdOk.append("captchaAnswer", capD2.answer);
+  fdOk.append("captchaChallenge", capD2.challenge);
+  fdOk.append("files", new File([new Uint8Array(PNG)], "我的画A.png", { type: "image/png" }));
+  fdOk.append("files", new File([new Uint8Array(PNG)], "我的画B.png", { type: "image/png" }));
+  r = await call(D2, "/api/guest/submit", { method: "POST", body: fdOk });
+  ok("  名字不同则正常通过", r.status === 200, "got " + r.status);
+
+  // 大小写不同也算重名（GitHub/Windows/macOS 上是同一个文件）
+  const D3 = makeEnv();
+  const capD3 = await solve(D3);
+  const fdCase = new FormData();
+  fdCase.append("college", COLLEGE);
+  fdCase.append("captchaAnswer", capD3.answer);
+  fdCase.append("captchaChallenge", capD3.challenge);
+  fdCase.append("files", new File([new Uint8Array(PNG)], "MyArt.png", { type: "image/png" }));
+  fdCase.append("files", new File([new Uint8Array(PNG)], "myart.png", { type: "image/png" }));
+  r = await call(D3, "/api/guest/submit", { method: "POST", body: fdCase });
+  ok("★ 只有大小写不同也算重名", r.status === 400, "got " + r.status);
+}
+
+// ---- 12b. 目标目录里已有同名文件 → 审核时拒绝 ----
+{
+  const A = makeEnv();
+  await bindBot(A, "ghp_FAKE_BOT_TOKEN", "boringtip");
+  const capA = await solve(A);
+  dirListing = [];
+  const fdA = new FormData();
+  fdA.append("college", COLLEGE);
+  fdA.append("captchaAnswer", capA.answer);
+  fdA.append("captchaChallenge", capA.challenge);
+  fdA.append("files", new File([new Uint8Array(PNG)], "撞名作品.png", { type: "image/png" }));
+  r = await call(A, "/api/guest/submit", { method: "POST", body: fdA });
+  const idA = r.json && r.json.id;
+  ok("先投一条（此时目录是空的）", r.status === 200 && !!idA, r.text.slice(0, 120));
+
+  if (idA) {
+    // 目录里现在有同名文件了
+    dirListing = [{ name: "撞名作品.png", type: "file", sha: "x" }];
+    ghCalls.length = 0;
+    const fdAp = new FormData();
+    fdAp.append("id", idA);
+    fdAp.append("note", "ok");
+    r = await call(A, "/api/review/approve", {
+      method: "POST", headers: { Cookie: cookie }, body: fdAp
+    });
+
+    ok("★ 目标目录已有同名文件 → 审核被拒",
+      r.status === 409, "got " + r.status + " " + r.text.slice(0, 140));
+    ok("  错误信息点明了是重名",
+      r.json && /已经有叫/.test(r.json.error || ""), JSON.stringify(r.json).slice(0, 160));
+    ok("  带了 nameClash 标记（前端好区分处理）",
+      r.json && r.json.nameClash === true);
+    ok("  ★ 一个文件都没写进去（否则就是覆盖）",
+      !ghCalls.some((c) => c.method === "PUT" && c.url.includes("/contents/")),
+      JSON.stringify(ghCalls.filter((c) => c.method === "PUT").map((c) => c.url)));
+
+    // 被拒的这条不能算「已审核通过」，否则推送时会重放
+    r = await call(A, "/api/review/list", { headers: { Cookie: cookie } });
+    const it = (r.json && r.json.items || []).find((x) => x.id === idA);
+    ok("  ★ 没写 _approved.json（不会被当成待推送重放）",
+      it && !it.approved, JSON.stringify(it && it.approved));
+
+    // list.txt 也不该动
+    ok("  list.txt 没被改",
+      !ghCalls.some((c) => c.method === "PUT" && c.url.includes("list.txt")));
+  }
+
+  // 目录里换成别的名字 → 应该放过
+  if (idA) {
+    dirListing = [{ name: "别的作品.png", type: "file", sha: "x" }];
+    ghCalls.length = 0;
+    const fdOk2 = new FormData();
+    fdOk2.append("id", idA);
+    r = await call(A, "/api/review/approve", {
+      method: "POST", headers: { Cookie: cookie }, body: fdOk2
+    });
+    ok("  目录里是别的名字则正常通过", r.status === 200 && r.json && r.json.ok === true,
+      r.status + " " + r.text.slice(0, 140));
+  }
+}
+
+// ---- 12c. list.txt 不算重名（它本来就在目录里）----
+{
+  const B = makeEnv();
+  await bindBot(B, "ghp_FAKE_BOT_TOKEN", "boringtip");
+  const capB = await solve(B);
+  dirListing = [{ name: "list.txt", type: "file", sha: "x" }];
+  const fdB = new FormData();
+  fdB.append("college", COLLEGE);
+  fdB.append("captchaAnswer", capB.answer);
+  fdB.append("captchaChallenge", capB.challenge);
+  fdB.append("files", new File([new Uint8Array(PNG)], "新作品.png", { type: "image/png" }));
+  r = await call(B, "/api/guest/submit", { method: "POST", body: fdB });
+  const idB = r.json && r.json.id;
+  if (idB) {
+    r = await call(B, "/api/review/approve", {
+      method: "POST", headers: { Cookie: cookie },
+      body: (() => { const x = new FormData(); x.append("id", idB); return x; })()
+    });
+    ok("目录里的 list.txt 不会被当成重名", r.status === 200, r.status + " " + r.text.slice(0, 120));
+  }
+  dirListing = [];
+}
 
 console.log("__RESULT__" + JSON.stringify(out));
