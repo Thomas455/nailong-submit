@@ -96,11 +96,22 @@ export default {
 
       // 兜底健康检查，方便确认 Worker 活着
       if (url.pathname === '/api/ping') {
+        // 小号绑定状态要真的查一下 R2 —— 原来检查的是已废弃的
+        // env.BOT_TOKEN（小号早改成 OAuth 绑定，那个变量不存在了），
+        // 所以 hasBot 永远是 false，排查时反而误导人。
+        let botBound = false;
+        try {
+          if (env.SUBMIT_BUCKET) {
+            botBound = Boolean(await env.SUBMIT_BUCKET.get('bot/meta.json'));
+          }
+        } catch (e) { /* 查不到就当没绑 */ }
+
         return withHeaders(json({
           ok: true,
-          hasBot: Boolean(env.BOT_TOKEN),
+          botBound,                       // 小号有没有绑定（真的查了 R2）
           hasBucket: Boolean(env.SUBMIT_BUCKET),
-          hasAdmin: Boolean(env.ADMIN_LOGIN)
+          hasAdmin: Boolean(env.ADMIN_LOGIN),
+          hasSendkey: Boolean(env.SCT_SENDKEY)
         }));
       }
 

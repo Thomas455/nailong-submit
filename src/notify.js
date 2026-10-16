@@ -22,9 +22,8 @@
                   ⚠️ 等于「谁能给你发消息」的钥匙，泄露了别人就能骚扰你
    ============================================================================ */
 
-  // 防刷校验要复用学院名单和 json 助手
+  // 防刷校验要复用学院名单
 import { COLLEGES } from './config.js';
-import { json } from './admin.js';
 
   // 通知里带上的固定标签。文档要求标签用竖线分隔（参数名 tags）。
 const TAG = 'submit of 奶龙';
@@ -194,10 +193,18 @@ export function guestSubmissionNote(m, id) {
   lines.push('https://submit.xn--psszg58cydsdq780c.com/admin');
 
   return {
-    title: `【游客投稿】${m.collegeName} · ${files.length} 件`,
+    title: clip(`【游客投稿】${m.collegeName} · ${files.length} 件`),
     desp: lines.join('\n'),
-    short: `${m.collegeName} 投了 ${files.length} 件作品`
+    short: clip(`${m.collegeName} 投了 ${files.length} 件作品`)
   };
+}
+
+// Server酱³ 的文档没标 title 上限（Server酱 Turbo 时代是 32 字），
+// 超长可能被截断。这里自己限死，别赌服务端行为。
+// 登录投稿那边「用户名39 + 学院名16」能到 60+，是最容易超的。
+function clip(s, max = 32) {
+  const str = String(s == null ? '' : s);
+  return str.length > max ? str.slice(0, max - 1) + '…' : str;
 }
 
 export function ghSubmissionNote(m, login) {
@@ -220,9 +227,9 @@ export function ghSubmissionNote(m, login) {
   lines.push('这次提交已经在你自己的 fork 上提了 PR，合并即可上线。');
 
   return {
-    title: `【登录投稿】${login} · ${m.collegeName}`,
+    title: clip(`【登录投稿】${login} · ${m.collegeName}`),
     desp: lines.join('\n'),
-    short: `${login} 投了 ${files.length} 件作品`
+    short: clip(`${login} 投了 ${files.length} 件作品`)
   };
 }
 
@@ -279,6 +286,21 @@ export async function notifyRoute(url, request, env) {
   // 留言长度
   if (note.length > 500) return jsonErr('留言过长', 400);
 
+  // ⚠️ 频控
+  //
+  // 游客投稿那条路有两道保险（R2 频控 + 服务端签名算术题），这个接口一道都没有。
+  // 结果是任何人一条 curl 就能让你收到一条带自定义留言的通知；
+  // 而 Server酱 免费档每天只有 5 条 —— 被刷光之后，
+  // **正常投稿的通知也发不出去了**（等于自己把功能打死）。
+  //
+  // 间隔 60 秒：登录投稿本来就少，够宽松；足以挡住循环刷额度。
+  const ip = request.headers.get('CF-Connecting-IP') || '0.0.0.0';
+  const rl = await checkNotifyRate(env, ip);
+  if (!rl.ok) {
+    // 429，但不告诉前端具体原因（免得被拿来探测阈值）
+    return jsonErr('提交太频繁，请稍后再试', 429);
+  }
+
   const r = await notify(env, ghSubmissionNote(
     { collegeName, note, files: files.map((name) => ({ name })) }, login));
 
@@ -288,6 +310,54 @@ export async function notifyRoute(url, request, env) {
     status: 200,
     headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }
   });
+}
+
+/* ============================================================
+   /api/notify/gh-submission 的频控
+
+   用 R2 当计数器（和游客投稿那边同一套思路），
+   键前缀 rl-notify/ 以免和投稿频控（rl/）串在一起。
+   IP 只存哈希，和游客投稿一致，不落原始 IP。
+   ============================================================ */
+const NOTIFY_RATE_GAP = 60;          // 秒
+
+async function notifyRateKey(ip) {
+  const d = await crypto.subtle.digest('SHA-256',
+    new TextEncoder().encode(String(ip)));
+  const h = Array.from(new Uint8Array(d).slice(0, 8))
+    .map((b) => b.toString(16).padStart(2, '0')).join('');
+  return 'rl-notify/' + h;
+}
+
+async function checkNotifyRate(env, ip) {
+  const bucket = env.RATE_BUCKET || env.SUBMIT_BUCKET;
+  if (!bucket) return { ok: true };        // 没桶就不拦（别因为计数故障打死功能）
+
+  const key = await notifyRateKey(ip);
+  try {
+    const obj = await bucket.get(key);
+    if (obj) {
+      let last = null;
+      try { last = JSON.parse(await obj.text()); } catch (e) { last = null; }
+      if (last && typeof last.at === 'number') {
+        const waited = Math.floor((Date.now() - last.at) / 1000);
+        if (waited < NOTIFY_RATE_GAP) return { ok: false, retryAfter: NOTIFY_RATE_GAP - waited };
+      }
+    }
+  } catch (e) {
+    return { ok: true };                    // 读失败就不拦
+  }
+
+  // 走到这里说明前面所有校验都过了，才记账 ——
+  // 恶意请求被 400 拒掉时不该占用额度
+  try {
+    await bucket.put(key, JSON.stringify({ at: Date.now() }), {
+      httpMetadata: { contentType: 'application/json' },
+      expirationTtl: 86400
+    });
+  } catch (e) { /* 记不上就算了，不影响推送 */ }
+
+  return { ok: true };
 }
 
 function jsonErr(msg, status) {

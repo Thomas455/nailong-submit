@@ -417,17 +417,20 @@
      投稿不是高频操作，这个代价可以接受。
      ============================================================ */
   function listMyPRs(token, login) {
-    // state=all：已合并的（GitHub 把它算 closed）也要看到，否则投过的稿会凭空消失
-    var url = '/repos/' + CFG.owner + '/' + CFG.repo + '/pulls' +
-              '?state=all&per_page=100&head=' +
-              encodeURIComponent(login + ':submit/');
+    // state=all：已合并的（GitHub 算 closed）也要看到，否则投过的稿会凭空消失
+    // ⚠️ 不传 head 参数：GitHub 文档只承诺 user:ref 的**精确**匹配，
+    //    前缀行为没有保证 —— 真用起来可能一个都筛不出来（列表永远空）。
+    //    宁可多拉点数据，也不赌未文档化的行为。
+    var url = '/repos/' + CFG.owner + '/' + CFG.repo + '/pulls?state=all&per_page=100';
 
     return req(token, 'GET', url).then(function (list) {
-      // 只留本站的分支（head 筛选理论上够，但保险起见再过一遍）
       return (list || []).filter(function (pr) {
-        return pr.head && pr.head.ref && pr.head.ref.indexOf('submit/') === 0;
+        // 两道条件：分支名以 submit/ 开头，且确实是这个用户提的
+        return pr.head && pr.head.ref &&
+               pr.head.ref.indexOf('submit/') === 0 &&
+               pr.head.user && pr.head.user.login &&
+               pr.head.user.login.toLowerCase() === String(login).toLowerCase();
       }).map(function (pr) {
-        // 从标题里还原学院和件数：[投稿] 学院名 · N 件作品
         var m = /^\[投稿\]\s*(.+?)\s*·\s*(\d+)\s*件作品/.exec(pr.title || '');
         return {
           number: pr.number,

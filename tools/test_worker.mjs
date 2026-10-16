@@ -646,4 +646,94 @@ for (const [label, payload] of bad) {
   ok("防刷：" + label + " 被拒", r.status === 400, "got " + r.status);
 }
 
+/* ===== 10. bot 接口的鉴权（回归测试）=====
+   之前 /api/bot/status 和 /api/bot/unbind 都是零鉴权：
+     · 任何人 POST /unbind 就能删掉小号绑定 →「审核通过/推送」瘫痪
+     · 任何人 GET /status 就能读出小号的 GitHub 用户名
+   review.js 的 7 个接口都有 requireAdmin，就这里漏了。 */
+
+// 未登录读不到绑定状态
+r = await call(E, "/api/bot/status");
+ok("bot/status 未登录 401", r.status === 401, "got " + r.status);
+
+// 未登录不能解绑 —— 而且真的没删掉
+await bindBot(E, "ghp_FAKE_BOT_TOKEN", "boringtip");
+r = await call(E, "/api/bot/unbind", { method: "POST" });
+ok("bot/unbind 未登录 401", r.status === 401, "got " + r.status);
+
+// 确认 token 还在（不是只回了个 401，底下真删了）
+r = await call(E, "/api/bot/status", { headers: { Cookie: cookie } });
+ok("  未登录的解绑没有真删掉绑定",
+  r.json && r.json.bound === true, JSON.stringify(r.json));
+
+// 未登录时前端拿不到小号用户名
+r = await call(E, "/api/bot/status");
+ok("  未登录读不到小号用户名",
+  r.status === 401 || !(r.json && r.json.login),
+  JSON.stringify(r.json));
+
+// 伪造 cookie 也不行
+r = await call(E, "/api/bot/status", { headers: { Cookie: "admin_session=a.b.c" } });
+ok("bot/status 伪造 cookie 401", r.status === 401, "got " + r.status);
+r = await call(E, "/api/bot/unbind", { method: "POST", headers: { Cookie: "admin_session=a.b.c" } });
+ok("bot/unbind 伪造 cookie 401", r.status === 401, "got " + r.status);
+
+// 登录后正常工作
+r = await call(E, "/api/bot/status", { headers: { Cookie: cookie } });
+ok("bot/status 登录后正常", r.status === 200 && r.json && r.json.bound === true,
+  r.status + " " + r.text.slice(0, 80));
+
+// 登录后能真的解绑
+r = await call(E, "/api/bot/unbind", { method: "POST", headers: { Cookie: cookie } });
+ok("bot/unbind 登录后能解绑", r.status === 200 && r.json && r.json.ok === true,
+  r.status + " " + r.text.slice(0, 80));
+r = await call(E, "/api/bot/status", { headers: { Cookie: cookie } });
+ok("  解绑后状态变成未绑定", r.json && r.json.bound === false, JSON.stringify(r.json));
+
+/* ===== 11. 通知接口的频控（回归测试）=====
+   /api/notify/gh-submission 原来无频控：任何人一条 curl 就能让你收到
+   带自定义留言的通知，而 Server酱 免费档每天只有 5 条 ——
+   被刷光之后正常投稿的通知也发不出去。 */
+
+// 第一次放行
+const RL = makeEnv();
+const ghPayload = {
+  login: "some-student",
+  job: { collegeName: COLLEGE, note: "作品不错" },
+  files: ["a.webp"]
+};
+r = await call(RL, "/api/notify/gh-submission", {
+  method: "POST", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(ghPayload)
+});
+ok("通知接口第一次放行", r.status === 200, "got " + r.status);
+
+// 同一个 IP 紧接着再发 → 应该被频控挡下
+r = await call(RL, "/api/notify/gh-submission", {
+  method: "POST", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(ghPayload)
+});
+ok("★ 同一 IP 第二次被频控挡下（原来完全没拦）", r.status === 429, "got " + r.status);
+
+// 换个桶 = 换个 IP，应该独立计数
+const RL2 = makeEnv();
+r = await call(RL2, "/api/notify/gh-submission", {
+  method: "POST", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(ghPayload)
+});
+ok("  换个 IP 不受影响", r.status === 200, "got " + r.status);
+
+// 非法请求（400）不该占用额度 —— 先灌一条坏的，再灌一条好的
+const RL3 = makeEnv();
+r = await call(RL3, "/api/notify/gh-submission", {
+  method: "POST", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ login: "bad name!!", job: { collegeName: COLLEGE }, files: [] })
+});
+ok("  非法请求先被 400 拒（不算刷）", r.status === 400, "got " + r.status);
+r = await call(RL3, "/api/notify/gh-submission", {
+  method: "POST", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(ghPayload)
+});
+ok("★ 被 400 拒掉的请求不占用频控额度", r.status === 200, "got " + r.status);
+
 console.log("__RESULT__" + JSON.stringify(out));

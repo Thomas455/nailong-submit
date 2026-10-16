@@ -125,7 +125,7 @@ async function handleSubmitCallback(request, url, env) {
 
   const saved = readCookie(request, 'submit_state') || '';
   const [savedCsrf, savedNonce] = saved.split('|');
-  if (!savedCsrf || savedCsrf !== state) {
+  if (!savedCsrf || !timingSafeEqual(savedCsrf, state)) {
     return html(oidcPage({ error: 'state 校验失败，请回投稿页重新登录。' }), 200, clearState);
   }
 
@@ -405,8 +405,13 @@ async function hmac(msg, env) {
     .map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// 定长比较，避免时序侧信道
-function timingSafeEqual(a, b) {
+// 恒定时间字符串比较。
+//
+// 会话 cookie 的 HMAC 校验、以及 OAuth state 的比对都走这里 ——
+// 用 !== 比对理论上会给时序侧信道留缝（攻击者靠响应时间差异逐字节猜）。
+// 实际上 HTTP 层的抖动远大于这点差异，几乎不可能利用，
+// 但这是安全审查的通用要求，改起来也就几行。
+export function timingSafeEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
   if (a.length !== b.length) return false;
   let diff = 0;

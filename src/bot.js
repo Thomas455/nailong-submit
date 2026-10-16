@@ -25,7 +25,7 @@
      GITHUB_CLIENT_SECRET   OAuth App 的 Client Secret（⚠️ 保密，同时用作加密密钥）
    ============================================================================ */
 
-import { json, html, escapeHtml, randomState, readCookie } from './admin.js';
+import { json, html, escapeHtml, randomState, readCookie, requireAdmin, timingSafeEqual } from './admin.js';
 
 const AUTHORIZE = 'https://github.com/login/oauth/authorize';
 const TOKEN_URL = 'https://github.com/login/oauth/access_token';
@@ -90,7 +90,7 @@ async function handleCallback(request, url, env) {
 
   const saved = readCookie(request, 'bot_state') || '';
   const [savedCsrf, savedNonce] = saved.split('|');
-  if (!savedCsrf || savedCsrf !== state) {
+  if (!savedCsrf || !timingSafeEqual(savedCsrf, state)) {
     return html(botPage({ error: 'state 校验失败，请回管理页重试。' }), 200, clearState);
   }
 
@@ -154,8 +154,22 @@ async function handleCallback(request, url, env) {
 
 /* ============================================================
    状态 / 解绑
+
+   ⚠️ 这两个都必须鉴权。
+   review.js 的 7 个接口都有 requireAdmin，wrangler.jsonc 的注释也写明
+   管理页仅管理员可用，就这里漏了：
+
+     · POST /api/bot/unbind 没鉴权 → 任何人一条 curl 就能删掉小号绑定，
+       「审核通过 / 推送」立刻瘫痪，要重新走 OAuth 绑定才能恢复。
+     · GET /api/bot/status 没鉴权 → 未登录即可读出小号的 GitHub 用户名。
    ============================================================ */
+function unauthorized() {
+  return json({ ok: false, error: '未登录管理页' }, 401);
+}
+
 async function handleStatus(request, env) {
+  if (!(await requireAdmin(request, env))) return unauthorized();
+
   const meta = await env.SUBMIT_BUCKET.get(BOT_META_KEY);
   if (!meta) return json({ bound: false, login: null });
   try {
@@ -173,6 +187,8 @@ async function handleStatus(request, env) {
 }
 
 async function handleUnbind(request, env) {
+  if (!(await requireAdmin(request, env))) return unauthorized();
+
   await env.SUBMIT_BUCKET.delete(BOT_TOKEN_KEY);
   await env.SUBMIT_BUCKET.delete(BOT_META_KEY);
   return json({ ok: true });
