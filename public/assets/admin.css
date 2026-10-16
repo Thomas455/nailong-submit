@@ -31,6 +31,21 @@ a.mini:hover { background: var(--track); transform: translateY(-1px); }
 .empty b { display: block; font-size: 16px; margin-bottom: 6px; }
 .empty span { font-size: 13.5px; color: var(--muted); }
 
+/* ---------- 加载失败提示 ---------- */
+.list-err {
+  margin: 0 0 14px; padding: 12px 14px; border-radius: 12px;
+  background: rgba(255, 107, 96, .12);
+  border: 1px solid rgba(255, 107, 96, .4);
+  color: var(--warn); font-size: 13.5px; line-height: 1.7;
+}
+.list-err[hidden] { display: none; }
+
+.q-loading {
+  padding: 22px 16px; border-radius: 14px; text-align: center;
+  color: var(--muted); font-size: 13.5px;
+  background: var(--card); border: 1px solid var(--line);
+}
+
 /* ---------- 队列 ---------- */
 .queue { list-style: none; display: flex; flex-direction: column; gap: 11px; }
 

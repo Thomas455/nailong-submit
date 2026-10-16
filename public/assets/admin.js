@@ -65,10 +65,10 @@
      ============================================================ */
 
   function check() {
-    fetch('/api/admin/session')
+    fetch('/api/admin/session', { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
       .then(function (j) {
-        if (j.loggedIn) {
+        if (j && j.loggedIn) {
           gate.hidden = true;
           board.hidden = false;
           whoEl.innerHTML = '管理员：<b></b>';
@@ -79,21 +79,48 @@
           board.hidden = true;
         }
       })
-      .catch(function () {});
+      .catch(function (e) {
+        // 之前这里是空的 catch，出错就什么都不显示
+        console.error('检查登录状态失败', e);
+        gate.hidden = false;
+        gateMsg.innerHTML = '<b style="color:var(--warn)">连不上服务端：' +
+          escapeHtml(e.message) + '</b>';
+      });
+  }
+
+  // 页面顶部的错误条。队列加载失败时用它显示 ——
+  // 之前错误只写进抽屉里的 dMsg，而抽屉是关着的，用户什么都看不到。
+  var listErr = $('listErr');
+
+  function showListError(text) {
+    if (!listErr) return;
+    if (!text) {
+      listErr.hidden = true;
+      listErr.textContent = '';
+      return;
+    }
+    listErr.hidden = false;
+    listErr.textContent = text;
   }
 
   function load() {
-    fetch('/api/review/list')
+    showListError('');
+    queueEl.innerHTML = '<li class="q-loading">正在加载…</li>';
+    fetch('/api/review/list', { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (!j.ok) {
           if (r_unauthorized(j)) return;
-          dMsg.textContent = j.error || '加载失败';
+          showListError('加载待审列表失败：' + (j.error || '未知错误'));
+          queueEl.innerHTML = '';
           return;
         }
         render(j.items || []);
       })
-      .catch(function (e) { dMsg.textContent = '加载失败：' + e.message; });
+      .catch(function (e) {
+        showListError('加载待审列表失败：' + e.message);
+        queueEl.innerHTML = '';
+      });
   }
 
   function r_unauthorized(j) {
