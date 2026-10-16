@@ -41,6 +41,9 @@
 
 // json 是 admin.js 里定义的共用工具
 import { json } from './admin.js';
+// 给你发 Server酱 推送
+import { COLLEGES } from './config.js';
+import { notify, guestSubmissionNote } from './notify.js';
 
 // 硬上限（即使前端被绕过也生效）
 const MAX_FILES = 20;
@@ -160,7 +163,7 @@ async function handleGuestSubmit(request, env) {
     });
   }
   // 元数据和图片放同一个前缀下，管理页一次 list 就能拿到全部信息
-  await env.SUBMIT_BUCKET.put(prefix + '_meta.json', JSON.stringify({
+  const meta = {
     id,
     collegeDir: college.dir,
     collegeName: college.name,
@@ -168,10 +171,16 @@ async function handleGuestSubmit(request, env) {
     files: cleaned.map((c) => ({ name: c.name, size: c.bytes.byteLength, type: c.type })),
     at: Date.now(),
     ip: hashIp(ip)          // 只存哈希，不存原始 IP
-  }), { httpMetadata: { contentType: 'application/json' } });
+  };
+  await env.SUBMIT_BUCKET.put(prefix + '_meta.json', JSON.stringify(meta),
+    { httpMetadata: { contentType: 'application/json' } });
 
   // 7. 记账频控（成功后才记，避免验证码失败也占用额度）
   await bumpRate(ip, env);
+
+  // 8. 给你发推送。失败只打日志，不影响投稿结果。
+  //    不 await —— 让它后台跑，投稿请求不用等推送服务响应。
+  notify(env, guestSubmissionNote(meta, id)).catch(() => {});
 
   return json({ ok: true, id });
 }
@@ -466,37 +475,5 @@ async function hashIp(ip) {
     .map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/* ---- 学院名单 ----
-   ⚠️ 必须和 public/assets/config.js 里的 colleges 一致，
-      也必须和仓库 works/ 下的目录名一致。
-   （这是服务端校验用的，不能信任前端传的名字。）
-   这里只留 dir 字段。 */
-const COLLEGES = [
-  { name: '经济与统计学院', dir: '经济与统计学院' },
-  { name: '法学院（律师学院）', dir: '法学院（律师学院）' },
-  { name: '马克思主义学院', dir: '马克思主义学院' },
-  { name: '教育学院（师范学院）', dir: '教育学院（师范学院）' },
-  { name: '体育学院', dir: '体育学院' },
-  { name: '人文学院', dir: '人文学院' },
-  { name: '外国语学院', dir: '外国语学院' },
-  { name: '新闻与传播学院', dir: '新闻与传播学院' },
-  { name: '管理学院（旅游学院/中法旅游学院）', dir: '管理学院（旅游学院·中法旅游学院）' },
-  { name: '公共管理学院', dir: '公共管理学院' },
-  { name: '音乐舞蹈学院', dir: '音乐舞蹈学院' },
-  { name: '美术与设计学院', dir: '美术与设计学院' },
-  { name: '数学与信息科学学院', dir: '数学与信息科学学院' },
-  { name: '物理与材料科学学院', dir: '物理与材料科学学院' },
-  { name: '化学化工学院', dir: '化学化工学院' },
-  { name: '地理科学与遥感学院', dir: '地理科学与遥感学院' },
-  { name: '生命科学学院', dir: '生命科学学院' },
-  { name: '机械与电气工程学院', dir: '机械与电气工程学院' },
-  { name: '电子与通信工程学院', dir: '电子与通信工程学院' },
-  { name: '计算机科学与网络工程学院', dir: '计算机科学与网络工程学院' },
-  { name: '建筑与城市规划学院', dir: '建筑与城市规划学院' },
-  { name: '土木与交通工程学院', dir: '土木与交通工程学院' },
-  { name: '环境科学与工程学院', dir: '环境科学与工程学院' },
-  { name: '网络空间安全学院', dir: '网络空间安全学院' },
-  { name: '人工智能学院', dir: '人工智能学院' }
-];
 
-export { COLLEGES, MAX_FILES };
+export { MAX_FILES };

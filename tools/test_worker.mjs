@@ -7,10 +7,20 @@ const COLLEGE = "美术与设计学院";
 const COLLEGE2 = "人文学院";
 
 const ghCalls = [];
+const sctCalls = [];      // Server酱 推送调用记录
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
   const url = typeof input === "string" ? input : input.url;
   const method = (init && init.method) || "GET";
+
+  // ---- Server酱：记录请求，假装成功 ----
+  if (url.includes("ft07.com")) {
+    let body = null;
+    try { body = init && init.body ? JSON.parse(init.body) : null; } catch (e) {}
+    sctCalls.push({ url, method, body });
+    return new Response(JSON.stringify({ code: 0, message: "", data: {} }),
+      { status: 200, headers: { "Content-Type": "application/json" } });
+  }
 
   if (url.includes("api.github.com")) {
     // 小号身份（fork 的 owner 从这里反查）
@@ -103,6 +113,8 @@ function makeEnv(over) {
     GITHUB_CLIENT_ID: "Iv1.testclientid",
     GITHUB_CLIENT_SECRET: "testsecret-do-not-use",
     ADMIN_LOGIN: "Thomas455",
+    SCT_UID: "12345",
+    SCT_SENDKEY: "sctp12345tFAKEFAKEFAKE",
     RATE_LIMIT: "1800"
   }, over || {});
 }
@@ -461,5 +473,89 @@ r = await call(NOSTORE, "/api/guest/config");
 ok("没配存储时 config 返回 ready:false", r.json && r.json.ready === false);
 r = await call(NOSTORE, "/api/guest/challenge");
 ok("没配存储时出题接口 503", r.status === 503, "got " + r.status);
+
+/* ===== 8. Server酱 推送 ===== */
+
+// 游客投稿应触发推送
+const E2 = makeEnv();
+const capE2 = await solve(E2);
+sctCalls.length = 0;
+const fdSct = new FormData();
+fdSct.append("college", COLLEGE);
+fdSct.append("note", "测试推送");
+fdSct.append("captchaAnswer", capE2.answer);
+fdSct.append("captchaChallenge", capE2.challenge);
+fdSct.append("files", new File([new Uint8Array(PNG)], "作品.webp", { type: "image/webp" }));
+r = await call(E2, "/api/guest/submit", { method: "POST", body: fdSct });
+ok("投稿成功（推送不影响结果）", r.status === 200, "got " + r.status);
+
+// 推送是 fire-and-forget，等它一下
+await new Promise((r2) => setTimeout(r2, 300));
+ok("游客投稿触发了推送", sctCalls.length === 1, "sctCalls=" + sctCalls.length);
+
+if (sctCalls.length) {
+  const s = sctCalls[0];
+  ok("  用 POST", s.method === "POST", s.method);
+  ok("  带上 uid（sendkey 以 sctp 开头时也要带上 uid）",
+    s.url.includes("12345"), s.url);
+  ok("  标签参数名是 tags（文档里是复数）",
+    s.body && typeof s.body.tags === "string", JSON.stringify(Object.keys(s.body || {})));
+  ok("  标签值 = 'submit of 奶龙'",
+    s.body && s.body.tags === "submit of 奶龙", s.body && s.body.tags);
+  ok("  有标题和正文", Boolean(s.body && s.body.title && s.body.desp));
+  ok("  正文里有投稿编号", s.body && /`[0-9A-Z]{6}`/.test(s.body.desp || ""),
+    s.body && String(s.body.desp).slice(0, 80));
+  ok("  正文里有学院名", s.body && String(s.body.desp).includes(COLLEGE));
+  ok("  没有泄露 uid/sendkey 到正文",
+    s.body && !String(s.body.desp).includes("12345") &&
+    !String(s.body.desp).includes("sctp"),
+    s.body && String(s.body.desp).slice(0, 60));
+}
+
+// 没配 SCT 时应该静默跳过，不影响投稿
+const NO_SCT = { ...makeEnv(), SCT_UID: "", SCT_SENDKEY: "" };
+const capNS = await solve(NO_SCT);
+sctCalls.length = 0;
+const fdNS = new FormData();
+fdNS.append("college", COLLEGE);
+fdNS.append("captchaAnswer", capNS.answer);
+fdNS.append("captchaChallenge", capNS.challenge);
+fdNS.append("files", new File([new Uint8Array(PNG)], "y.webp", { type: "image/webp" }));
+r = await call(NO_SCT, "/api/guest/submit", { method: "POST", body: fdNS });
+ok("没配 Server酱 也能投稿", r.status === 200, "got " + r.status);
+await new Promise((r2) => setTimeout(r2, 200));
+ok("  且不会真的去请求推送服务", sctCalls.length === 0, "sctCalls=" + sctCalls.length);
+
+// 浏览器那条路：/api/notify/gh-submission
+sctCalls.length = 0;
+r = await call(E, "/api/notify/gh-submission", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ login: "some-student", job: { collegeName: COLLEGE, note: "作品不错" }, files: ["a.webp"] })
+});
+ok("登录投稿的通知接口接受请求", r.status === 200, "got " + r.status + " " + r.text.slice(0, 80));
+await new Promise((r2) => setTimeout(r2, 200));
+ok("  并发出推送", sctCalls.length === 1, "sctCalls=" + sctCalls.length);
+if (sctCalls.length) {
+  ok("  带上投稿人", String(sctCalls[0].body.desp).includes("some-student"));
+  ok("  标签正确", sctCalls[0].body.tags === "submit of 奶龙");
+}
+
+// 防刷：参数不合法的一律拒
+const bad = [
+  ["login 不合法", { login: "bad name!!", job: { collegeName: COLLEGE }, files: [] }],
+  ["学院不在名单", { login: "someone", job: { collegeName: "不存在的学院" }, files: [] }],
+  ["文件太多", { login: "someone", job: { collegeName: COLLEGE }, files: new Array(30).fill("a.webp") }],
+  ["文件名过长", { login: "someone", job: { collegeName: COLLEGE }, files: ["x".repeat(200)] }],
+  ["留言过长", { login: "someone", job: { collegeName: COLLEGE, note: "y".repeat(600) }, files: [] }]
+];
+for (const [label, payload] of bad) {
+  r = await call(E, "/api/notify/gh-submission", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  ok("防刷：" + label + " 被拒", r.status === 400, "got " + r.status);
+}
 
 console.log("__RESULT__" + JSON.stringify(out));

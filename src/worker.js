@@ -31,6 +31,7 @@ import { adminRoutes, json } from './admin.js';
 import { guestRoutes } from './guest.js';
 import { reviewRoutes } from './review.js';
 import { botRoutes } from './bot.js';
+import { notifyRoute } from './notify.js';
 
 export default {
   async fetch(request, env) {
@@ -59,6 +60,10 @@ export default {
       // /api/bot/* —— 小号绑定（OAuth 换 token，加密存 R2）
       const bot = await botRoutes(url, request, env);
       if (bot) return withHeaders(bot);
+
+      // /api/notify/* —— Server酱 推送（浏览器那边要靠它代发，密钥不能在前端）
+      const note = await notifyRoute(url, request, env);
+      if (note) return withHeaders(note);
 
       // /api/guest/* —— 游客投稿
       const guest = await guestRoutes(url, request, env);

@@ -287,6 +287,10 @@
       })
       .then(function (pr) {
         onStep('完成');
+
+        // 给你发推送（fire-and-forget：失败也不影响投稿结果）
+        pingWorker({ login: login, job: job, files: uploaded, prNumber: pr.number });
+
         return {
           prUrl: pr.html_url,
           prNumber: pr.number,
@@ -294,6 +298,23 @@
           files: uploaded
         };
       });
+  }
+
+  // 让服务端给你发 Server酱 推送。
+  //
+  // 为什么绕这一圈：推送要带 Server酱 的 uid/sendkey，那是**秘密**，
+  // 绝对不能出现在前端代码里（任何人打开投稿页源码都能看到）。
+  // 所以由 Worker 代发 —— 密钥只存在 Cloudflare 的加密变量里。
+  //
+  // 失败无所谓，不 await。
+  function pingWorker(payload) {
+    try {
+      fetch('/api/notify/gh-submission', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).catch(function () { /* 静默 */ });
+    } catch (e) { /* 静默 */ }
   }
 
   // ---- PR 描述 ----

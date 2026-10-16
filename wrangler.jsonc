@@ -67,14 +67,20 @@
   // ⚠️ 秘密变量：用 wrangler secret put 配，不要写进这个文件
   // ==========================================================================
   //   GITHUB_CLIENT_SECRET   OAuth Client Secret
-  //   BOT_TOKEN              小号的 token —— 唯一会写仓库的凭据
-  //                         （还用于给会话 cookie 和人机验证题目签名）
+  //                         （还用于给会话 cookie 和小号 token 加密）
+  //
+  //   SCT_UID               Server酱 的 uid（有人投稿时给你发微信）
+  //   SCT_SENDKEY           Server酱 的完整 sendkey（sctp<uid>t...）
+  //                         ⚠️ 等于「谁能给你发消息」的钥匙，泄露了别人就能骚扰你
   //
   //   npx wrangler secret put GITHUB_CLIENT_SECRET
-  //   npx wrangler secret put BOT_TOKEN
+  //   npx wrangler secret put SCT_UID
+  //   npx wrangler secret put SCT_SENDKEY
   //
-  // 以前还需要 TURNSTILE_SECRET —— 现在改成自建的算术题验证，
-  // 不再依赖 Cloudflare Turnstile，那个变量可以删掉了。
+  // 小号 token **不在这里** —— 它由管理页「绑定小号」走 OAuth 换到，
+  // 加密后存进 R2（见 src/bot.js）。
+  //
+  // 以前还需要 BOT_TOKEN / TURNSTILE_SECRET，现在都不需要了。
 
   // 本地开发默认端口
   "dev": {
