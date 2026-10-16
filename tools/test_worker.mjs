@@ -13,11 +13,22 @@ globalThis.fetch = async (input, init) => {
   const method = (init && init.method) || "GET";
 
   if (url.includes("api.github.com")) {
+    const hdrs = (init && init.headers) || {};
     ghCalls.push({ t: "gh", method,
       url: url.replace("https://api.github.com", ""),
-      auth: init && init.headers && init.headers.Authorization });
+      auth: hdrs.Authorization,
+      userAgent: hdrs["User-Agent"] || hdrs["user-agent"] || null });
     const H = { "Content-Type": "application/json" };
     const p = new URL(url).pathname;
+
+    // GitHub 会因为缺 User-Agent 直接返回 403
+    // ("Request forbidden by administrative rules")。
+    // 这里直接当成失败，让测试能抓住漏加头的 bug。
+    if (!(hdrs["User-Agent"] || hdrs["user-agent"])) {
+      return new Response(JSON.stringify({
+        message: "Request forbidden by administrative rules. Please make sure your request has a User-Agent header."
+      }), { status: 403, headers: { "Content-Type": "application/json" } });
+    }
 
     if (method === "GET" && /\/git\/ref\/heads\//.test(p))
       return new Response(JSON.stringify({ object: { sha: "basesha123" } }), { headers: H });
@@ -298,6 +309,12 @@ ok("  写了 list.txt", w.some(c => c.url.includes("list.txt")));
 ok("  建了 PR", w.some(c => c.url.endsWith("/pulls")));
 ok("  全用小号 token",
   w.length > 0 && w.every(c => c.auth === "Bearer ghp_FAKE_BOT_TOKEN"));
+
+// GitHub 缺 User-Agent 会直接 403（"Request forbidden by administrative rules"）。
+// 之前这里漏了头，线上发布一直失败 —— 用测试守住。
+ok("  每次请求都带 User-Agent",
+  w.length > 0 && w.every(c => c.userAgent && String(c.userAgent).length > 0),
+  JSON.stringify(w.map(c => c.userAgent)));
 
 r = await call(W, "/api/guest/status?id=" + ID);
 ok("发布后 = published", r.json && r.json.status === "published", JSON.stringify(r.json));

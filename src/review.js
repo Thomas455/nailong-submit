@@ -333,7 +333,12 @@ async function gh(token, method, path, body, allow404) {
     headers: {
       Authorization: 'Bearer ' + token,
       Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28'
+      'X-GitHub-Api-Version': '2022-11-28',
+      // ⚠️ User-Agent 头是**必须的**，少了会被 GitHub 直接 403 挡掉：
+      //    "Request forbidden by administrative rules. Please make sure
+      //     your request has a User-Agent header"
+      // （admin.js 里的 fetchLogin 早就加了，这里漏了。）
+      'User-Agent': 'nailong-submit-worker'
     }
   };
   if (body !== undefined) {

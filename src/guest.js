@@ -37,6 +37,7 @@
 // json 是 admin.js 里定义的共用工具
 import { json } from './admin.js';
 
+// GitHub API 的地址（review.js 写仓库时用）
 const GH_API = 'https://api.github.com';
 
 // 和主站 config.js 对应的仓库坐标。这个 Worker 只需要知道这些常量。
