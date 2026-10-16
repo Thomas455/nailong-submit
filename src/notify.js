@@ -36,7 +36,14 @@ export async function notify(env, { title, desp, short }) {
   const sendkey = String(env.SCT_SENDKEY || '').trim();
 
   if (!sendkey) {
-    // 没配就是没配，别刷日志（每次投稿都刷一遍很吵）
+    // 没配 sendkey 就直接跳过 —— 原来连日志都不打，结果线上看到
+    // 「投稿 200 但一条推送记录都没有」，完全分不清是没配还是没收到。
+    // 记一条 skipped，之后在 Logs 里搜 SCT 就能一眼看出来。
+    logSend(env, {
+      ok: false, status: 0, code: 'NO_SENDKEY',
+      message: '没配 SCT_SENDKEY，推送已跳过',
+      title: title || '', short: short || '', url: ''
+    });
     return { ok: false, skipped: true };
   }
 
@@ -77,23 +84,76 @@ export async function notify(env, { title, desp, short }) {
     clearTimeout(timer);
 
     const txt = await r.text().catch(() => '');
-    if (!r.ok) {
-      console.warn('SCT 推送失败 HTTP', r.status, txt.slice(0, 160));
-      return { ok: false, status: r.status };
-    }
 
     // 文档的返回体形如 { code: 0, message: '', data: { ... } }
     let j = null;
     try { j = txt ? JSON.parse(txt) : null; } catch (e) {}
-    if (j && typeof j.code === 'number' && j.code !== 0) {
-      console.warn('SCT 返回错误', j.code, j.message || '');
-      return { ok: false, code: j.code, message: j.message };
-    }
+
+    const okFlag = r.ok && (!j || typeof j.code !== 'number' || j.code === 0);
+
+    // ⚠️ **成功也要记一笔。**
+    // 以前只在失败时打日志，于是「到底发没发出去」只能靠有没有收到微信来倒推 ——
+    // 线上日志里看到投稿 200 但一条推送记录都没有，根本分不清是
+    // 「没配 sendkey 被静默跳过」还是「发出去了只是没收到」。
+    logSend(env, {
+      ok: okFlag,
+      status: r.status,
+      code: (j && typeof j.code === 'number') ? j.code : null,
+      message: (j && j.message) || txt.slice(0, 200),
+      title: body.title,
+      short: body.short,
+      url: url.replace(sendkey, '<sendkey>')    // ⚠️ 绝不把 sendkey 写进日志
+    });
+
+    if (!okFlag) return { ok: false, status: r.status, code: (j && j.code) || null, message: (j && j.message) || '' };
     return { ok: true };
   } catch (e) {
-    console.warn('SCT 推送异常', e && e.message);
+    logSend(env, {
+      ok: false, status: 0, code: null,
+      message: String(e && e.message),
+      title: body.title, short: body.short,
+      url: url.replace(sendkey, '<sendkey>')
+    });
     return { ok: false, error: String(e && e.message) };
   }
+}
+
+/* ============================================================
+   推送日志
+
+   去哪儿看：Cloudflare Dashboard → Worker nailong-submit → Logs
+   搜 `SCT` 能看到每一次推送（成功和失败都记）。
+   结构化输出，直接按 ok 字段筛：搜 `"ok":false` 只看失败的。
+
+   顺带支持往自建日志服务发一份（可选，要配 WORKER_LOG_URL）。
+   ⚠️ 绝不记录 sendkey —— Workers 日志会被 Cloudflare 保留，写进去等于泄露。
+   ============================================================ */
+function logSend(env, rec) {
+  const safe = {
+    ok: rec.ok,
+    status: rec.status || 0,
+    code: rec.code,
+    short: rec.short || '',
+    title: rec.title || '',
+    msg: (rec.message || '').slice(0, 160)
+  };
+
+  try {
+    console.log('SCT', JSON.stringify(safe));
+  } catch (e) { /* 日志本身失败不影响推送 */ }
+
+  const url = env.WORKER_LOG_URL;
+  if (!url) return;
+  try {
+    fetch(url, {
+      method: 'POST',
+      headers: Object.assign(
+        { 'Content-Type': 'application/json', 'User-Agent': 'nailong-submit-worker' },
+        env.WORKER_LOG_TOKEN ? { Authorization: 'Bearer ' + env.WORKER_LOG_TOKEN } : {}
+      ),
+      body: JSON.stringify(Object.assign({ at: Date.now(), env: 'submit' }, safe))
+    }).catch(() => {});
+  } catch (e) { /* 静默 */ }
 }
 
 /* ============================================================

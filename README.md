@@ -235,6 +235,19 @@ npx wrangler secret put SCT_SENDKEY
 配好后有人投稿（游客或 GitHub 登录都算）就会给你发一条微信，
 消息里带投稿编号、学院、作品列表和留言，标签固定是 `submit of 奶龙`。
 
+**怎么确认推送有没有发出去**：Dashboard → Worker `nailong-submit` → Logs，搜 `SCT`。
+每一次推送都会留一条记录（成功也记），长这样：
+
+```
+SCT {"ok":true,"status":200,"code":0,"short":"美术学院 投了 3 件作品","title":"【游客投稿】…"}
+SCT {"ok":false,"status":400,"code":40001,"short":"…","msg":"sendkey 无效"}
+SCT {"ok":false,"status":0,"code":"NO_SENDKEY","msg":"没配 SCT_SENDKEY，推送已跳过"}
+```
+
+搜 `"ok":false` 只看失败的。
+⚠️ 日志里的 sendkey 会被替换成 `<sendkey>` —— Workers 日志由 Cloudflare 保留，
+写进去等于泄露。
+
 > sendkey 等于「谁能给你发消息」的钥匙，所以只走加密变量，
 > **绝不写进代码或 git**。没配也不影响投稿 —— 推送会被静默跳过。
 

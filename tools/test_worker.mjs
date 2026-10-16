@@ -535,6 +535,62 @@ if (sctCalls.length) {
     s.body && String(s.body.desp).slice(0, 60));
 }
 
+/* ===== 9. 推送日志：成功也要记，且绝不泄露 sendkey ===== */
+// 抓 console 输出，确认每次推送都留了痕。
+// 以前只在失败时打日志，于是线上看到「投稿 200 但一条推送记录都没有」，
+// 完全分不清是「没配 sendkey」还是「发出去了但没收到微信」。
+const logs = [];
+const origLog = console.log;
+console.log = (...a) => { logs.push(a.join(" ")); };
+
+// 成功路径
+{
+  const LG = makeEnv();
+  sctCalls.length = 0;
+  logs.length = 0;
+  const capL = await solve(LG);
+  const fdL = new FormData();
+  fdL.append("college", COLLEGE);
+  fdL.append("captchaAnswer", capL.answer);
+  fdL.append("captchaChallenge", capL.challenge);
+  fdL.append("files", new File([new Uint8Array(PNG)], "log.webp", { type: "image/webp" }));
+  r = await call(LG, "/api/guest/submit", { method: "POST", body: fdL });
+  await new Promise((x) => setTimeout(x, 300));
+
+  const sctLog = logs.filter((x) => x.indexOf("SCT") === 0);
+  ok("推送成功后写了日志", sctLog.length > 0, "共 " + logs.length + " 条日志");
+  if (sctLog.length) {
+    ok("  日志里有 ok:true", sctLog.join(" ").indexOf('"ok":true') >= 0, sctLog[0].slice(0, 140));
+    ok("  日志带上了学院名", sctLog.join(" ").indexOf(COLLEGE) >= 0, sctLog[0].slice(0, 140));
+    ok("  ★ 日志里绝不能出现 sendkey",
+      sctLog.join(" ").indexOf("sctp12345tFAKEFAKEFAKE") < 0,
+      sctLog.join(" ").slice(0, 160));
+    ok("  ★ 日志里绝不能出现裸 uid", sctLog.join(" ").indexOf("12345") < 0,
+      sctLog.join(" ").slice(0, 160));
+  }
+}
+
+// 没配 sendkey 的路径也要留痕
+{
+  const NS = { ...makeEnv(), SCT_SENDKEY: "" };
+  sctCalls.length = 0;
+  logs.length = 0;
+  const capN = await solve(NS);
+  const fdN = new FormData();
+  fdN.append("college", COLLEGE);
+  fdN.append("captchaAnswer", capN.answer);
+  fdN.append("captchaChallenge", capN.challenge);
+  fdN.append("files", new File([new Uint8Array(PNG)], "n.webp", { type: "image/webp" }));
+  r = await call(NS, "/api/guest/submit", { method: "POST", body: fdN });
+  ok("没配 sendkey 也能投稿", r.status === 200, "got " + r.status);
+  await new Promise((x) => setTimeout(x, 300));
+  ok("  不会真的请求推送服务", sctCalls.length === 0, "sctCalls=" + sctCalls.length);
+  ok("  ★ 但会记一条 skipped 日志（以前完全静默，线上查不出原因）",
+    logs.some((x) => x.indexOf("NO_SENDKEY") >= 0), "logs=" + logs.length);
+}
+
+console.log = origLog;
+
 // 没配 SCT 时应该静默跳过，不影响投稿
 const NO_SCT = { ...makeEnv(), SCT_SENDKEY: "" };
 const capNS = await solve(NO_SCT);
