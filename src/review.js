@@ -296,7 +296,37 @@ async function moveToDone(env, id, m) {
 
 /* ============================================================
    GitHub API 小封装
+
+   出错时把「哪个接口 + HTTP 状态 + GitHub 的原话 + 缺什么权限」
+   都带上 —— 只说 "GitHub: Resource not accessible by integration"
+   根本没法排查。
    ============================================================ */
+
+// 接口路径片段 → 需要什么权限，用来在报错时给出可执行的提示。
+// ⚠️ 顺序重要：更具体的路径要排在更宽的前面，
+//    否则 /git/refs 会被 /git/ref 先匹配掉，提示成「读」而不是「写」。
+const NEEDED = [
+  ['/contents',   'Contents: 读写（提交文件）'],
+  ['/pulls',      'Pull requests: 写（建 PR）'],
+  ['/merges',     'Contents: 写（合并分支）'],
+  ['/git/refs',   'Contents: 写（建分支）'],
+  ['/git/ref/',   'Contents: 读（读分支）']
+];
+
+function hintFor(path, status) {
+  if (status === 401) return 'BOT_TOKEN 无效或已过期，需要重新生成。';
+  if (status === 404) return '找不到资源 —— 确认仓库名对、小号能看到这个仓库、branch 存在。';
+  if (status === 422) return 'GitHub 拒绝了这次请求（参数或状态不对），常见于分支已存在或文件冲突。';
+  if (status === 403 || status === 401) {
+    const hit = NEEDED.find((p) => path.indexOf(p[0]) >= 0);
+    return '小号的 token 没有权限做这件事。检查三处：\n' +
+           '  1. token 的 Permissions 里有没有「' + (hit ? hit[1] : '对应权限') + '」\n' +
+           '  2. Repository access 选的是不是「Only select repositories」并且勾选了这个仓库\n' +
+           '  3. 小号是不是对仓库有 collaborator 权限（公开仓库也要在 token 里勾上）';
+  }
+  return '';
+}
+
 async function gh(token, method, path, body, allow404) {
   const opt = {
     method,
@@ -316,9 +346,19 @@ async function gh(token, method, path, body, allow404) {
   const txt = await r.text();
   let d = null;
   try { d = txt ? JSON.parse(txt) : null; } catch (e) {}
+
   if (!r.ok) {
-    const msg = (d && d.message) || ('HTTP ' + r.status);
-    throw new Error('GitHub: ' + msg);
+    const apiMsg = (d && d.message) || txt.slice(0, 120) || ('HTTP ' + r.status);
+    // 简短路径，方便人看（完整路径太长）
+    const shortPath = path.replace('/repos/Thomas455/nailong-university', '')
+                        .slice(0, 60);
+    const hint = hintFor(shortPath, r.status);
+    const err = new Error(
+      `GitHub ${r.status}（${method} ${shortPath}）：${apiMsg}` +
+      (hint ? '\n' + hint : '')
+    );
+    err.status = r.status;
+    throw err;
   }
   return d;
 }
