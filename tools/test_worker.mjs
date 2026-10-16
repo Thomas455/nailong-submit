@@ -513,10 +513,19 @@ ok("游客投稿触发了推送", sctCalls.length === 1, "sctCalls=" + sctCalls.
 if (sctCalls.length) {
   const s = sctCalls[0];
   ok("  用 POST", s.method === "POST", s.method);
-  // URL 拼法照官方 SDK（serverchan-sdk）：**整串 sendkey** 当子域名，
-  // 不是「uid.push...send/<sendkey>.send」—— 那样和 SDK 不一致。
-  ok("  URL = https://<整串 sendkey>.push.ft07.com/send",
-    s.url === "https://sctp12345tFAKEFAKEFAKE.push.ft07.com/send", s.url);
+  // URL 拼法照**官方 API 文档**（doc.sc3.ft07.com/zh/serverchan3/server/api）：
+  //     https://<uid>.push.ft07.com/send/<sendkey>.send
+  //   uid 从 sendkey 里用 /^sctp(\d+)t/ 提取。
+  //
+  // ⚠️ 这条断言以前写反了 —— 它断言的是「整串 sendkey 当子域名」，
+  //    而那正是官方在 SDK 1.0.7 修正掉的 1.0.6 过时写法
+  //    （commit 767d366「修正 1.0.6 遗留的 sctp URL 拼接」）。
+  //    也就是说测试当时在给 bug 背书。两种拼法都有泛域名解析、
+  //    都不报网络错，只是返回 code:10003 sendkey not found。
+  ok("  URL = https://<uid>.push.ft07.com/send/<sendkey>.send",
+    s.url === "https://12345.push.ft07.com/send/sctp12345tFAKEFAKEFAKE.send", s.url);
+  ok("  子域名是提取出的 uid 数字（不是整串 sendkey）",
+    s.url.indexOf("sctp12345tFAKEFAKEFAKE.push") < 0, s.url);
   ok("  带上了 User-Agent（漏了会被服务端 403）",
     s.userAgent === "nailong-submit-worker", String(s.userAgent));
   ok("  Content-Type 带 charset=utf-8（和官方 SDK 一致）",

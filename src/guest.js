@@ -50,7 +50,7 @@ const MAX_FILES = 20;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;      // 单张 2MB 上限（前端已压到 900KB）
 const MAX_TOTAL_BYTES = 24 * 1024 * 1024;    // 单次提交 24MB 上限
 
-export async function guestRoutes(url, request, env) {
+export async function guestRoutes(url, request, env, ctx) {
   if (url.pathname === '/api/guest/config') return guestConfig(env);
   // 出题接口：前端每次要答题时来拿一道新的
   if (url.pathname === '/api/guest/challenge') {
@@ -60,7 +60,7 @@ export async function guestRoutes(url, request, env) {
     return json(await issueChallenge(env));
   }
   if (url.pathname === '/api/guest/submit' && request.method === 'POST') {
-    return handleGuestSubmit(request, env);
+    return handleGuestSubmit(request, env, ctx);
   }
   if (url.pathname === '/api/guest/status') {
     return handleGuestStatus(url, env);
@@ -87,7 +87,7 @@ function guestConfig(env) {
      captchaAnswer     用户填的答案
      captchaChallenge  出题接口给的签名串
    ============================================================ */
-async function handleGuestSubmit(request, env) {
+async function handleGuestSubmit(request, env, ctx) {
   if (!env.SUBMIT_BUCKET) {
     return json({ ok: false, error: '服务端还没配好，暂时无法投稿' }, 503);
   }
@@ -179,8 +179,16 @@ async function handleGuestSubmit(request, env) {
   await bumpRate(ip, env);
 
   // 8. 给你发推送。失败只打日志，不影响投稿结果。
-  //    不 await —— 让它后台跑，投稿请求不用等推送服务响应。
-  notify(env, guestSubmissionNote(meta, id)).catch(() => {});
+  //
+  // ⚠️ 必须用 ctx.waitUntil() 登记，不能就那么扔着不管：
+  //   Workers 里 handler 一返回，没登记的 promise **会被运行时取消** ——
+  //   推送可能还没发出去就被杀掉，而且连日志都不会留下
+  //   （症状：投稿 200，日志里一条 SCT 都没有）。
+  //   登记之后：投稿响应照样立刻返回（不等推送），推送则保证跑完。
+  const pushing = notify(env, guestSubmissionNote(meta, id)).catch(() => {});
+  if (ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(pushing);
+  }
 
   return json({ ok: true, id });
 }

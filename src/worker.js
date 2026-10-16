@@ -34,7 +34,12 @@ import { botRoutes } from './bot.js';
 import { notifyRoute } from './notify.js';
 
 export default {
-  async fetch(request, env) {
+  // ⚠️ 第三个参数 ctx 是**必须**的。
+  // 游客投稿的推送是 fire-and-forget（不等它返回，怕拖慢投稿响应），
+  // 但 Workers 里「handler 返回后未登记的 promise 会被直接取消」——
+  // 推送可能在真正发出去之前就被杀掉，而且连日志都不会留下。
+  // 用 ctx.waitUntil() 登记后，运行时保证这段 I/O 跑完。
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     // 基础安全响应头。所有页面都带上。
@@ -65,8 +70,8 @@ export default {
       const note = await notifyRoute(url, request, env);
       if (note) return withHeaders(note);
 
-      // /api/guest/* —— 游客投稿
-      const guest = await guestRoutes(url, request, env);
+      // /api/guest/* —— 游客投稿（ctx 透传进去，给推送用 waitUntil）
+      const guest = await guestRoutes(url, request, env, ctx);
       if (guest) return withHeaders(guest);
 
       // /api/admin/* —— 管理员登录

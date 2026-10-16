@@ -22,11 +22,11 @@
                   ⚠️ 等于「谁能给你发消息」的钥匙，泄露了别人就能骚扰你
    ============================================================================ */
 
-// 防刷校验要复用学院名单和 json 助手
+  // 防刷校验要复用学院名单和 json 助手
 import { COLLEGES } from './config.js';
 import { json } from './admin.js';
 
-// 通知里带上的固定标签。文档要求标签用竖线分隔（参数名 tags）。
+  // 通知里带上的固定标签。文档要求标签用竖线分隔（参数名 tags）。
 const TAG = 'submit of 奶龙';
 
 /**
@@ -47,13 +47,23 @@ export async function notify(env, { title, desp, short }) {
     return { ok: false, skipped: true };
   }
 
-  // URL 拼法照官方 SDK（serverchan-sdk）：
-  //   sctp 开头的（Server酱³）→ https://<整串 sendkey>.push.ft07.com/send
-  //   老的 → https://sctapi.ftqq.com/<sendkey>.send
-  // ⚠️ sctp 那种是把**整串 sendkey**当子域名，不是只取 uid。
-  //   我最初写成「uid.push.ft07.com/send/<sendkey>.send」，那和 SDK 不一致。
-  const url = sendkey.startsWith('sctp')
-    ? `https://${sendkey}.push.ft07.com/send`
+  // URL 拼法照**官方 API 文档**（doc.sc3.ft07.com/zh/serverchan3/server/api）：
+  //     https://<uid>.push.ft07.com/send/<sendkey>.send
+  //   uid 可以从 sendkey 里提取，正则 /^sctp(\d+)t/
+  //
+  // ⚠️ 这里踩过坑，值得记一下：
+  //   我一开始照「SDK 文档」里那段 TypeScript 写成
+  //     https://<整串 sendkey>.push.ft07.com/send
+  //   那是 serverchan-sdk 1.0.6 的过时写法，官方在 1.0.7 已经修正
+  //   （commit 767d366「修正 1.0.6 遗留的 sctp URL 拼接」）。
+  //   两种拼法都有 Cloudflare 泛域名解析，不会报网络错，
+  //   而是返回 HTTP 200 + {"error":"sendkey not found","code":10003}
+  //   —— 症状就是「投稿全成功，但永远收不到推送」。
+  //
+  //   教训：参考实现时，**以 API 文档为准**，别只看 SDK 文档里的示例代码。
+  const uidMatch = sendkey.match(/^sctp(\d+)t/);
+  const url = uidMatch
+    ? `https://${uidMatch[1]}.push.ft07.com/send/${encodeURIComponent(sendkey)}.send`
     : `https://sctapi.ftqq.com/${encodeURIComponent(sendkey)}.send`;
 
   const body = {
