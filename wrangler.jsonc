@@ -53,10 +53,6 @@
   "vars": {
     "GITHUB_CLIENT_ID": "Ov23lixg2nDUNSnqhIwn",
 
-    // Turnstile 的 site key 是公开值 —— 它本来就写在前端 HTML 里，
-    // 任何人打开投稿页源码都能看到。
-    "TURNSTILE_SITE_KEY": "0x4AAAAAAFXroYBHyKhkBsXt",
-
     // 允许进管理页的 GitHub 用户名。
     // 放明文而不是 secret：它就是你的用户名，仓库里到处都是（README、
     // 提交记录、PR 链接），不算秘密。真正的安全边界是「能不能通过 OAuth
@@ -70,13 +66,15 @@
   // ==========================================================================
   // ⚠️ 秘密变量：用 wrangler secret put 配，不要写进这个文件
   // ==========================================================================
-  //   GITHUB_CLIENT_SECRET   OAuth Client Secret（也用作会话签名密钥）
+  //   GITHUB_CLIENT_SECRET   OAuth Client Secret
   //   BOT_TOKEN              小号的 token —— 唯一会写仓库的凭据
-  //   TURNSTILE_SECRET       Turnstile 服务端密钥
+  //                         （还用于给会话 cookie 和人机验证题目签名）
   //
   //   npx wrangler secret put GITHUB_CLIENT_SECRET
   //   npx wrangler secret put BOT_TOKEN
-  //   npx wrangler secret put TURNSTILE_SECRET
+  //
+  // 以前还需要 TURNSTILE_SECRET —— 现在改成自建的算术题验证，
+  // 不再依赖 Cloudflare Turnstile，那个变量可以删掉了。
 
   // 本地开发默认端口
   "dev": {

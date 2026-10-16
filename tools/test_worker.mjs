@@ -12,12 +12,6 @@ globalThis.fetch = async (input, init) => {
   const url = typeof input === "string" ? input : input.url;
   const method = (init && init.method) || "GET";
 
-  if (url.includes("challenges.cloudflare.com")) {
-    ghCalls.push({ t: "turnstile" });
-    return new Response(JSON.stringify({ success: true }),
-      { headers: { "Content-Type": "application/json" } });
-  }
-
   if (url.includes("api.github.com")) {
     ghCalls.push({ t: "gh", method,
       url: url.replace("https://api.github.com", ""),
@@ -60,8 +54,6 @@ function makeEnv(over) {
     GITHUB_CLIENT_SECRET: "testsecret-do-not-use",
     ADMIN_LOGIN: "Thomas455",
     BOT_TOKEN: "ghp_FAKE_BOT_TOKEN",
-    TURNSTILE_SITE_KEY: "0x4AAAA-test-site-key",
-    TURNSTILE_SECRET: "0x4AAAA-test-secret",
     RATE_LIMIT: "1800"
   }, over || {});
 }
@@ -129,9 +121,9 @@ const cookie = `admin_session=${login}.${ts}.${sign}`;
 const E = makeEnv();
 let r = await call(E, "/api/guest/config");
 ok("guest/config 200", r.status === 200);
-ok("  暴露 site key（前端要用）", r.json && r.json.turnstileSiteKey === "0x4AAAA-test-site-key");
+ok("  告知用的是算术题验证", r.json && r.json.captcha === "math");
 ok("  不含 BOT_TOKEN", r.text.indexOf("ghp_FAKE") === -1);
-ok("  不含 TURNSTILE_SECRET", r.text.indexOf("0x4AAAA-test-secret") === -1);
+ok("  不含 GITHUB_CLIENT_SECRET", r.text.indexOf("testsecret") === -1);
 ok("  不含 ADMIN_LOGIN", r.text.indexOf("Thomas455") === -1);
 ok("  不含 GITHUB_CLIENT_SECRET", r.text.indexOf("testsecret") === -1);
 
@@ -171,15 +163,26 @@ const oldSign = crypto.createHmac("sha256", "testsecret-do-not-use")
 r = await call(E, "/api/admin/session", { headers: { Cookie: `admin_session=${login}.${oldTs}.${oldSign}` } });
 ok("过期会话被拒", r.json && r.json.loggedIn === false);
 
+/* 拿到一道题并算出正确答案（测试里要模拟真人答题） */
+async function solve(env) {
+  const r = await call(env, "/api/guest/challenge");
+  if (!r.json || !r.json.ok) return null;
+  // 题面形如 "3 + 4 = ?" 或 "9 − 2 = ?" 或 "3 × 5 = ?"
+  const m = /(\d+)\s*([+−×])\s*(\d+)/.exec(r.json.question);
+  if (!m) return null;
+  const a = Number(m[1]), b = Number(m[3]);
+  const ans = m[2] === "+" ? a + b : (m[2] === "−" ? a - b : a * b);
+  return { challenge: r.json.challenge, answer: String(ans), question: r.json.question };
+}
 /* ===== 4. 输入校验（各自独立桶避免频控串场）===== */
 let V = makeEnv();
 r = await call(V, "/api/guest/submit", {
-  method: "POST", body: fdOf({ college: "../../etc/passwd", tsToken: "t" }, [{ name: "x.webp" }]) });
+  method: "POST", body: fdOf({ college: "../../etc/passwd", captchaAnswer: "1", captchaChallenge: "x" }, [{ name: "x.webp" }]) });
 ok("路径穿越式学院名被拒", r.status === 400, "got " + r.status);
 
 V = makeEnv();
 r = await call(V, "/api/guest/submit", {
-  method: "POST", body: fdOf({ college: "不存在的学院", tsToken: "t" }, [{ name: "x.webp" }]) });
+  method: "POST", body: fdOf({ college: "不存在的学院", captchaAnswer: "1", captchaChallenge: "x" }, [{ name: "x.webp" }]) });
 ok("不存在的学院被拒", r.status === 400, "got " + r.status);
 
 V = makeEnv();
@@ -200,22 +203,59 @@ ok("SVG 被拒（防 XSS）", r.status === 400, "got " + r.status);
 
 V = makeEnv();
 r = await call(V, "/api/guest/submit", {
-  method: "POST", body: fdOf({ college: COLLEGE, tsToken: "t" }, []) });
+  method: "POST", body: fdOf({ college: COLLEGE, captchaAnswer: "1", captchaChallenge: "x" }, []) });
 ok("没带图被拒", r.status === 400, "got " + r.status);
 
 /* ===== 5. 完整投稿 → 待审 → 发布 ===== */
 const W = makeEnv();
+// 先拿一道题，答对才让投稿通过（模拟真人答题）
+const wCap = await solve(W);
+ok("出题接口返回题目", Boolean(wCap && wCap.question), wCap && wCap.question);
 r = await call(W, "/api/guest/submit", {
   method: "POST",
-  body: fdOf({ college: COLLEGE, note: "测试留言", tsToken: "t" },
-             [{ name: "我的画.webp" }, { name: "第二张.png" }]) });
-ok("游客投稿成功", r.status === 200 && r.json && r.json.ok === true, r.text.slice(0, 150));
+  body: fdOf({ college: COLLEGE, note: "测试留言",
+               captchaAnswer: wCap.answer, captchaChallenge: wCap.challenge },
+              [{ name: "我的画.webp" }, { name: "第二张.png" }]) });
+ok("游客投稿成功（答对算术题）", r.status === 200 && r.json && r.json.ok === true, r.text.slice(0, 150));
 const ID = r.json && r.json.id;
 ok("编号 6 位且无易混字符",
   typeof ID === "string" && /^[0-9A-Z]{6}$/.test(ID) && !/[IO01]/.test(ID), String(ID));
 
+// 答错要被拒，并要求换题
+const W2 = makeEnv();
+const badCap = await solve(W2);
+r = await call(W2, "/api/guest/submit", {
+  method: "POST",
+  body: fdOf({ college: COLLEGE,
+               captchaAnswer: String(Number(badCap.answer) + 1),
+               captchaChallenge: badCap.challenge },
+              [{ name: "x.webp" }]) });
+ok("答错算术题被拒", r.status === 400, "got " + r.status);
+ok("  并要求换新题", r.json && r.json.needNewChallenge === true, JSON.stringify(r.json));
+
+// 完全不带答案也要被拒
+const W3 = makeEnv();
+r = await call(W3, "/api/guest/submit", {
+  method: "POST", body: fdOf({ college: COLLEGE }, [{ name: "x.webp" }]) });
+ok("不带答案被拒", r.status === 400, "got " + r.status);
+
+// 篡改 challenge 也必须被拒（签名的意义就在这）
+const W4 = makeEnv();
+const fCap = await solve(W4);
+const tampered = fCap.challenge.replace(/\|(\d+)$/, "|999");
+r = await call(W4, "/api/guest/submit", {
+  method: "POST",
+  body: fdOf({ college: COLLEGE, captchaAnswer: "999", captchaChallenge: tampered },
+              [{ name: "x.webp" }]) });
+ok("篡改 challenge 被拒", r.status === 400, "got " + r.status);
+
+// 频控：同 IP 第二次提交（这次要答对题，否则测的是验证码而不是频控）
+const cap2 = await solve(W);
 r = await call(W, "/api/guest/submit", {
-  method: "POST", body: fdOf({ college: COLLEGE, tsToken: "t" }, [{ name: "y.webp" }]) });
+  method: "POST",
+  body: fdOf({ college: COLLEGE,
+               captchaAnswer: cap2.answer, captchaChallenge: cap2.challenge },
+              [{ name: "y.webp" }]) });
 ok("同 IP 第二次被频控", r.status === 429, "got " + r.status);
 
 r = await call(W, "/api/guest/status?id=" + ID);
@@ -271,8 +311,12 @@ ok("处理后队列空", r.json && (r.json.items || []).length === 0);
 
 /* ===== 6. 拒绝流程 ===== */
 const X = makeEnv();
+const cap3 = await solve(X);
 r = await call(X, "/api/guest/submit", {
-  method: "POST", body: fdOf({ college: COLLEGE2, tsToken: "t" }, [{ name: "y.webp" }]) });
+  method: "POST",
+  body: fdOf({ college: COLLEGE2,
+               captchaAnswer: cap3.answer, captchaChallenge: cap3.challenge },
+              [{ name: "y.webp" }]) });
 ok("第二条投稿成功", r.status === 200, r.text.slice(0, 120));
 const ID2 = r.json.id;
 const fdRej = new FormData();
@@ -288,12 +332,12 @@ ok("  投稿人看到拒绝原因", r.json && /不合适/.test(r.json.note || ""
 /* ===== 7. 未配置时挡住 ===== */
 const Y = makeEnv({ BOT_TOKEN: "" });
 r = await call(Y, "/api/guest/submit", {
-  method: "POST", body: fdOf({ college: COLLEGE, tsToken: "t" }, [{ name: "z.webp" }]) });
+  method: "POST", body: fdOf({ college: COLLEGE }, [{ name: "z.webp" }]) });
 ok("BOT_TOKEN 没配 → 503", r.status === 503, "got " + r.status);
 
-const Z = makeEnv({ TURNSTILE_SECRET: "" });
-r = await call(Z, "/api/guest/submit", {
-  method: "POST", body: fdOf({ college: COLLEGE, tsToken: "t" }, [{ name: "z.webp" }]) });
-ok("Turnstile 没配 → 503", r.status === 503, "got " + r.status);
+const Z = makeEnv({ BOT_TOKEN: "" });
+r = await call(Z, "/api/guest/challenge", {
+  method: "POST", body: fdOf({ college: COLLEGE }, [{ name: "z.webp" }]) });
+ok("BOT_TOKEN 没配 → 出题接口 503", r.status === 503, "got " + r.status);
 
 console.log("__RESULT__" + JSON.stringify(out));

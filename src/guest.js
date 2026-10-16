@@ -14,19 +14,23 @@
    这是个**对全网开放的上传口**，任何人都能打。必须假设会被刷、被传
    垃圾、甚至被传恶意内容。所以有几道硬约束：
 
-   1. Turnstile 验证码 —— 挡掉自动脚本
+   1. 算术题人机验证（服务端签名）—— 挡掉最笨的脚本
    2. 按 IP 频控（R2 计数）—— 挡掉慢速真人刷
-   3. 强制类型/尺寸校验 —— 只收真正的 webp/jpeg
-   4. 图片重编码 —— 即使骗过类型检查，也只能存成合法图片。
-      这一点最关键：伪造扩展名传 .exe/.html 会被重编码成真图片，
-      而不是原样存下来。
-   5. 文件名彻底消毒 —— 杜绝路径穿越（../../ 之类）
+   3. 学院名白名单 —— 不信任前端传来的字符串
+   4. 只看魔数不看后缀 —— 伪装成 .webp 的脚本骗不过这一关
+   5. 拒收 SVG —— SVG 能带 <script onload>
+   6. 文件名彻底消毒 —— 杜绝路径穿越（../../ 之类）
+   7. 人工审核 —— 前面的万一都漏了，还有你一双眼睛
 
    ★ 任何一条校验不过都是「拒绝」，绝不「降级放过」。
 
+   已知不足（诚实记录）：服务端**不重新编码图片**，只看魔数。构造出来的
+   「魔数对、内容错」的畸形文件仍可能通过。要彻底消除得在 Worker 里跑
+   图片解码重编码（引入 Wasm，吃 CPU 额度）。当前靠魔数 + 人工审核兜底。
+
    ---- 环境变量 ----
      BOT_TOKEN          小号的 token（⚠️ 保密，GitHub PAT 或 OAuth token）
-     TURNSTILE_SECRET   Turnstile 服务端密钥
+     GITHUB_CLIENT_SECRET  也用作人机验证题目的签名密钥（复用，不新增变量）
      RATE_LIMIT         每个 IP 的间隔秒数（默认 1800 = 30 分钟一次）
    ============================================================================ */
 
@@ -46,6 +50,13 @@ const MAX_TOTAL_BYTES = 24 * 1024 * 1024;    // 单次提交 24MB 上限
 
 export async function guestRoutes(url, request, env) {
   if (url.pathname === '/api/guest/config') return guestConfig(env);
+  // 出题接口：前端每次要答题时来拿一道新的
+  if (url.pathname === '/api/guest/challenge') {
+    if (!env.BOT_TOKEN || !env.SUBMIT_BUCKET) {
+      return json({ ok: false, error: '服务端还没配好' }, 503);
+    }
+    return json(await issueChallenge(env));
+  }
   if (url.pathname === '/api/guest/submit' && request.method === 'POST') {
     return handleGuestSubmit(request, env);
   }
@@ -56,11 +67,10 @@ export async function guestRoutes(url, request, env) {
 }
 
 function guestConfig(env) {
+  // 不下发任何密钥 —— 这个接口只告诉前端「有没有配好」和用的哪套验证
   return json({
-    // 只暴露「有没有配好」和一个公开的 site key。
-    // secret 和 bot token 一个都不下发。
-    turnstileSiteKey: env.TURNSTILE_SITE_KEY || '',
-    ready: Boolean(env.BOT_TOKEN && env.TURNSTILE_SECRET && env.SUBMIT_BUCKET)
+    captcha: 'math',
+    ready: Boolean(env.BOT_TOKEN && env.SUBMIT_BUCKET)
   });
 }
 
@@ -68,13 +78,14 @@ function guestConfig(env) {
    投稿
 
    期望的表单字段：
-     college   学院目录名（必须在下拉名单里，见 COLLEGES）
-     note      留言（可选）
-     files[]   图片文件
-     tsToken   Turnstile token
+     college           学院目录名（必须在下拉名单里，见 COLLEGES）
+     note              留言（可选）
+     files[]           图片文件
+     captchaAnswer     用户填的答案
+     captchaChallenge  出题接口给的签名串
    ============================================================ */
 async function handleGuestSubmit(request, env) {
-  if (!env.BOT_TOKEN || !env.TURNSTILE_SECRET || !env.SUBMIT_BUCKET) {
+  if (!env.BOT_TOKEN || !env.SUBMIT_BUCKET) {
     return json({ ok: false, error: '服务端还没配好，暂时无法投稿' }, 503);
   }
 
@@ -93,11 +104,22 @@ async function handleGuestSubmit(request, env) {
     return json({ ok: false, error: '提交内容太大或格式不对' }, 400);
   }
 
-  // 3. Turnstile 验证
-  const ts = form.get('tsToken');
-  const turnstile = await verifyTurnstile(ts, ip, env);
-  if (!turnstile.ok) {
-    return json({ ok: false, error: '验证码没通过：' + turnstile.error }, 400);
+  // 3. 人机验证（自建的算术题，不用第三方服务）
+  //
+  // 为什么不用 Turnstile：国内访问 challenges.cloudflare.com 不稳，
+  // 叠加各种拦截插件，真实用户过不了的概率不低；而这个站的定位就是
+  // 给国内同学用的。而且后面还有人工审核兜底，验证码只是第一道粗筛。
+  //
+  // 为什么服务端要签名：否则用户可以直接伪造 /api/guest/challenge 的
+  // 返回值、自己算出一个合法答案 —— 相当于没有验证。
+  // 答案用 HMAC 签进 challenge 里，服务端提交时重新算一遍对答案。
+  const answer = form.get('captchaAnswer');
+  const challenge = String(form.get('captchaChallenge') || '');
+  // ⚠️ 必须 await：verifyChallenge 是 async 的，忘了 await 的话
+  //    check 是个 Promise，check.ok 恒为 undefined → 所有提交都被拒。
+  const check = await verifyChallenge(challenge, answer, env);
+  if (!check.ok) {
+    return json({ ok: false, error: check.error, needNewChallenge: true }, 400);
   }
 
   // 4. 学院校验：必须是名单里的，杜绝任意字符串进仓库路径
@@ -240,28 +262,121 @@ function sniffImage(b) {
 }
 
 /* ============================================================
-   Turnstile
+   人机验证：算术题
+
+   设计要点：
+   · 题面由服务端生成，**答案签进 challenge 里**（HMAC-SHA256）。
+     没有签名的话，用户可以自己伪造一个合法答案，等于没验证。
+   · challenge 自带过期时间戳，10 分钟内有效。
+   · 签名密钥复用 GITHUB_CLIENT_SECRET，不新增环境变量。
+     （万一它没配，用一个占位串 —— 此时 ADMIN_LOGIN 也没配的话
+       isAdmin() 会全拒，所以不会因此产生绕过。）
+
+   为什么不用现成的验证码服务：
+   国内访问 challenges.cloudflare.com 不稳，叠加拦截插件，真实用户
+   过不了的概率不低；而本站后面还有人工审核兜底，验证码只是粗筛。
    ============================================================ */
-async function verifyTurnstile(token, ip, env) {
-  if (!token) return { ok: false, error: '缺少验证码' };
-  try {
-    const r = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        secret: env.TURNSTILE_SECRET,
-        response: String(token),
-        remoteip: ip
-      })
-    });
-    const d = await r.json();
-    if (!d.success) {
-      return { ok: false, error: (d['error-codes'] || []).join(',') || '验证失败' };
-    }
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: '验证服务暂时不可用' };
+const CAPTCHA_TTL_MS = 10 * 60 * 1000;
+
+const captchaKeyCache = new Map();
+
+async function captchaKey(env) {
+  const secret = env.GITHUB_CLIENT_SECRET || 'no-secret-configured';
+  if (captchaKeyCache.has(secret)) return captchaKeyCache.get(secret);
+  const key = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  captchaKeyCache.set(secret, key);
+  return key;
+}
+
+async function captchaSign(msg, env) {
+  const key = await captchaKey(env);
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(msg));
+  return Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// 生成一道题。只用加减乘，避免除法的零和负数问题。
+function makeQuestion() {
+  const kind = Math.floor(Math.random() * 3);
+  let a, b, text;
+  if (kind === 0) {
+    a = 2 + Math.floor(Math.random() * 8);
+    b = 1 + Math.floor(Math.random() * 8);
+    text = a + ' + ' + b + ' = ?';
+  } else if (kind === 1) {
+    a = 6 + Math.floor(Math.random() * 13);
+    b = 2 + Math.floor(Math.random() * 6);
+    text = a + ' − ' + b + ' = ?';   // 用减号而不是负号结果，避免歧义
+  } else {
+    a = 2 + Math.floor(Math.random() * 5);
+    b = 2 + Math.floor(Math.random() * 5);
+    text = a + ' × ' + b + ' = ?';
   }
+  return { text: text, answer: answerOf(kind, a, b) };
+}
+
+function answerOf(kind, a, b) {
+  if (kind === 0) return a + b;
+  if (kind === 1) return a - b;
+  return a * b;
+}
+
+// 出题：把题面和签名一起发给前端，前端只拿得到题面
+async function issueChallenge(env) {
+  const q = makeQuestion();
+  const nonce = crypto.randomUUID ? crypto.randomUUID() : String(Math.random());
+  const ts = String(Date.now());
+  // payload 里带答案 —— 签名保证它没被篡改
+  const payload = [nonce, ts, q.text, q.answer].join('|');
+  const sig = await captchaSign(payload, env);
+  return {
+    ok: true,
+    question: q.text,
+    // 前端提交时把 payload 原样带回来（challenge = payload + '.' + sig）
+    challenge: payload + '.' + sig
+  };
+}
+
+// 校验答案
+async function verifyChallenge(challenge, answer, env) {
+  if (!challenge) return { ok: false, error: '验证数据缺失，请刷新页面重试' };
+  if (answer === undefined || answer === null || String(answer).trim() === '') {
+    return { ok: false, error: '请先回答算术题' };
+  }
+
+  const raw = String(challenge);
+  const dot = raw.lastIndexOf('.');
+  if (dot <= 0) return { ok: false, error: '验证数据格式不对，请刷新页面' };
+
+  const payload = raw.slice(0, dot);
+  const sig = raw.slice(dot + 1);
+
+  // 先验签，防止伪造
+  const want = await captchaSign(payload, env);
+  if (want.length !== sig.length) return { ok: false, error: '验证数据无效，请刷新页面' };
+  let diff = 0;
+  for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ sig.charCodeAt(i);
+  if (diff !== 0) return { ok: false, error: '验证数据无效，请刷新页面' };
+
+  const parts = payload.split('|');
+  if (parts.length !== 4) return { ok: false, error: '验证数据格式不对' };
+  const [nonce, ts, text, expected] = parts;
+
+  // 过期检查（10 分钟）
+  const n = Number(ts);
+  if (!Number.isFinite(n) || Date.now() - n > CAPTCHA_TTL_MS || n - Date.now() > 60000) {
+    return { ok: false, error: '验证已超时，请刷新页面重新回答' };
+  }
+
+  // 对答案（宽松一点：接受 01 / 1 这种写法）
+  const got = String(answer).trim().replace(/[^\d-]/g, '');
+  if (String(Number(got)) !== String(Number(expected))) {
+    return { ok: false, error: '算术题答错了，再试一次', needNewQuestion: true };
+  }
+
+  return { ok: true };
 }
 
 /* ============================================================

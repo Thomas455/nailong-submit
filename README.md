@@ -48,7 +48,7 @@
 ### 路径二：游客投稿
 
 ```
-投稿者选学院、拖入图片、填个留言、过 Turnstile 验证码
+投稿者选学院、拖入图片、填个留言、回答一道算术题
         ↓ 浏览器本地：转 webp + 压缩 + 抹掉 EXIF
         ↓ 提交到 Worker
         ↓ ★ 图片存进 R2 暂存区，不碰仓库 ★
@@ -142,17 +142,18 @@ GitHub → Settings → Developer settings → **OAuth Apps** → New OAuth App
 
 **Client ID** 是公开值，已经写进 `wrangler.jsonc` 的 `vars`，每次部署自动带上。
 
-其余四个是**秘密**，用命令配（存进 Cloudflare 加密存储，不进 git）：
+其余两个是**秘密**，用命令配（存进 Cloudflare 加密存储，不进 git）：
 
 ```powershell
 npx wrangler secret put GITHUB_CLIENT_SECRET   # OAuth App 的 Client Secret
-npx wrangler secret put ADMIN_LOGIN            # 你的 GitHub 用户名，如 Thomas455
 npx wrangler secret put BOT_TOKEN              # 第 2 步的小号 token
-npx wrangler secret put TURNSTILE_SECRET       # 见下一步
 ```
 
 （也可以在 Dashboard → Worker → Settings → Variables and Secrets 里逐条添加，
 **类型必须选 Secret** 而不是 Text。）
+
+> `GITHUB_CLIENT_SECRET` 一个密钥干三件事：换 OAuth token、给管理页会话
+> cookie 签名、给人机验证的题目签名。所以它必须配好，否则三个功能一起挂。
 
 ### 4. 建 R2 存储桶
 
@@ -165,17 +166,16 @@ npx wrangler r2 bucket create nailong-rate
 
 （第二个是频控计数器，可以省略 —— 省略后会自动退回用第一个桶。）
 
-### 5. 开 Turnstile（防刷，免费）
+### 5. 人机验证：不需要配置
 
-Cloudflare 后台 → **Turnstile** → Add a site：
+用的是**自建的算术题**（`3 + 4 = ?`），不依赖任何第三方服务：
 
-- Site name：随便
-- **Hostname**：`submit.xn--psszg58cydsdq780c.com`
+- 题目由服务端生成，**答案用 HMAC 签进 challenge 里**，前端伪造不了
+- 签名密钥复用 `GITHUB_CLIENT_SECRET`，不用新增环境变量
+- 10 分钟过期，一道题只能用一次
 
-创建后拿到 **Site Key**（公开）和 **Secret Key**（保密）：
-
-- Site Key → 填进 `wrangler.jsonc` 的 `vars.TURNSTILE_SITE_KEY`
-- Secret Key → `npx wrangler secret put TURNSTILE_SECRET`
+所以这一节跳过即可。以前配的 `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET`
+可以从 Cloudflare 里删掉了。
 
 ### 6. 部署
 
@@ -241,7 +241,7 @@ npx wrangler dev
 游客投稿是**对全网开放的上传口**。任何人都能打，所以必须假设会被刷、被传垃圾。
 有几道硬约束：
 
-1. **Turnstile 验证码** —— 挡掉自动脚本
+1. **算术题人机验证（服务端签名）** —— 挡掉最笨的脚本。答案 HMAC 签名，前端伪造不了
 2. **按 IP 频控** —— 挡掉慢速真人刷（默认 30 分钟一次）
 3. **学院名白名单** —— 不信任前端传来的字符串，必须在名单里（挡住路径穿越）
 4. **只看魔数不看后缀** —— 把 `.exe` 改名成 `.webp` 骗不过这一关；扩展名由魔数反推

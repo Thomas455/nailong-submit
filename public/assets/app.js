@@ -37,10 +37,11 @@
   var logBox = $('log'), logTitle = $('logTitle'), logSteps = $('logSteps'), logResult = $('logResult');
   var stepMine = $('stepMine'), mineList = $('mineList'), refreshMine = $('refreshMine');
   var modeGh = $('modeGh'), modeGuest = $('modeGuest');
-  var guestBits = $('guestBits'), submitHint = $('submitHint');
+  var submitHint = $('submitHint');
   var stepStatus = $('stepStatus'), statusId = $('statusId'), statusBtn = $('statusBtn'),
       statusResult = $('statusResult');
-  var turnstileWidget = null;
+  // 人机验证：服务端出一道算术题，这里只负责出题、收答案
+  var captcha = { challenge: '', answer: '', loading: false };
 
   /* ============================================================
      零、选一条路（GitHub 登录 / 游客投稿）
@@ -71,12 +72,12 @@
     if (guest) {
       submitHint.innerHTML = '提交后会进入审核队列，维护者看过后才会发布到展览馆。' +
         '图片里的手机定位等隐私信息会被自动抹掉。';
-      loadTurnstile();
+      loadCaptcha();
     } else {
       submitHint.innerHTML = '提交后会创建 Pull Request。主站维护者合并后，作品会出现在 ' +
         '<a href="https://xn--psszg58cydsdq780c.com/show" target="_blank" rel="noopener">奶龙展览馆</a>' +
         '对应学院的卡片里。';
-      guestBits.hidden = true;
+      captchaBox().hidden = true;
     }
 
     // 已选的文件保留（用户可能只是切回来）
@@ -87,202 +88,94 @@
   modeGuest.addEventListener('click', function () { setMode('guest'); });
 
   /* ============================================================
-     Turnstile（游客模式的人机验证）
+     人机验证：算术题
+
+     为什么不用 Turnstile：国内访问 challenges.cloudflare.com 不稳，
+     叠加各种拦截插件，真实用户过不了的概率不低；而本站后面还有人工审核
+     兜底，验证码只是第一道粗筛，不值得为此牺牲体验。
+
+     安全性靠服务端签名：题面和答案都由服务端算，签进 challenge 里。
+     用户伪造不了 —— 改一个字节签名就对不上了。
      ============================================================ */
 
-  var guestCfg = null;   // 服务端下发的 site key
-  var guestCfgPromise = null;   // 配置到达的信号，loadTurnstile 等它
-  var tsLoading = false; // 防止并发拉两次脚本
+  var guestCfg = null;        // 服务端下发的配置（只含 captcha 类型和 ready）
+  var guestCfgPromise = null; // 配置到达的信号
 
-  function loadTurnstile() {
-    if (turnstileWidget) return;
+  function captchaBox() { return $('captchaBox'); }
+  function captchaQ() { return $('captchaQ'); }
+  function captchaInput() { return $('captchaInput'); }
+  function captchaMsg() { return $('captchaMsg'); }
 
-    // ⚠️ 这里原来有个竞态：页面启动时 applyMode('guest') 先跑，
-    //    而 guestCfg 是异步 fetch 回来的，此刻还是 null。
-    //    旧代码直接 return 并且再也不重试 → 验证码永远不出现 →
-    //    getTurnstileToken() 永远 null → 提交按钮永远是灰的。
-    //    现在改成：没配置就等配置到位后再挂载。
+  function loadCaptcha() {
+    if (captcha.challenge) return;      // 已经有题了
     if (!guestCfg) {
-      if (guestCfgPromise) guestCfgPromise.then(function () { loadTurnstile(); });
+      // 配置还没到 —— 等它（applyMode 先跑，fetch 后到）
+      if (guestCfgPromise) guestCfgPromise.then(function () { loadCaptcha(); });
       return;
     }
-    if (!guestCfg.turnstileSiteKey) {
-      guestBits.hidden = false;
-      setTsStatus('人机验证还没配好，暂时只能用 GitHub 登录投稿。', true);
-      updateCounter();
-      return;
-    }
-
-    if (window.turnstile) { mountTurnstile(); return; }
-    if (tsLoading) return;
-    tsLoading = true;
-
-    guestBits.hidden = false;
-
-    // ⚠️ 不要用 guestBits.innerHTML = '…' 来显示提示！
-    //    #turnstile 容器是 guestBits 的**子元素**，一赋值就被整个替换掉了，
-    //    后面 render('#turnstile') 找不到容器，Turnstile 静默失败（不报错、不显示）。
-    //    这正是线上「验证码一直不出来」的原因。
-    //    提示文字只改 tsStatus 自己，不碰容器。
-    setTsStatus('正在加载人机验证…', true);
-
-    // 按需加载：只有游客模式才拉这个脚本
-    var s = document.createElement('script');
-    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
-    s.async = true;
-    s.defer = true;
-    s.onload = function () { tsLoading = false; waitForTurnstile(); };
-    s.onerror = function () {
-      tsLoading = false;
-      setTsStatus('人机验证加载失败（检查网络，或换个浏览器）。也可以先用 GitHub 登录投稿。');
-      updateCounter();
-    };
-    document.head.appendChild(s);
-
-    // 兜底：onload 触发时 window.turnstile 可能还没准备好
-    //（render=explicit 模式下它内部还会再异步初始化一小会儿）。
-    // 这里轮询等它真的可用，别只信 onload。
-    waitForTurnstile();
+    if (!captchaBox()) return;
+    captchaBox().hidden = false;
+    newCaptcha();
   }
 
-  /**
-   * 等 window.turnstile.render 真的可用再挂载。
-   *
-   * 为什么不能只靠 script.onload：实测踩过「window.turnstile 存在但
-   * render 不是函数」——脚本下载完了，但内部异步初始化还没结束。
-   * 这是 Turnstile 官方建议的等待方式（轮询而非信任 onload）。
-   */
-  function waitForTurnstile() {
-    var tries = 0;
-    (function tick() {
-      tries++;
-      if (turnstileWidget) return;                       // 挂好了
-      if (window.turnstile && typeof window.turnstile.render === 'function') {
-        mountTurnstile();
-        return;
-      }
-      if (tries > 60) {                                  // 约 12 秒
-        setTsStatus('人机验证初始化超时。可以刷新页面重试，或先用 GitHub 登录投稿。');
-        updateCounter();
-        return;
-      }
-      setTimeout(tick, 200);
-    })();
-  }
+  // 换一道新题
+  function newCaptcha() {
+    if (captcha.loading) return;
+    captcha.loading = true;
+    captcha.challenge = '';
+    captcha.answer = '';
+    if (captchaInput()) captchaInput().value = '';
+    if (captchaQ()) captchaQ().textContent = '正在出题…';
+    setCaptchaMsg('');
 
-  // 只改提示文字，不动 #turnstile 容器本身。
-  // ⚠️ 千万不要用 guestBits.innerHTML = '…' —— 那会把 #turnstile 容器删掉，
-  //    之后 render('#turnstile') 找不到容器，静默失败（不报错也不显示）。
-  function setTsStatus(text) {
-    var box = $('tsStatus');
-    if (!box) {
-      box = document.createElement('p');
-      box.id = 'tsStatus';
-      box.className = 'note';
-      box.style.marginTop = '10px';
-      guestBits.appendChild(box);
-    }
-    box.textContent = text;
-  }
-
-  function mountTurnstile() {
-    if (turnstileWidget || !guestCfg) return;
-    guestBits.hidden = false;
-
-    // window.turnstile 还没准备好就等 —— 见 waitForTurnstile
-    if (!window.turnstile || typeof window.turnstile.render !== 'function') {
-      waitForTurnstile();
-      return;
-    }
-
-    // 容器必须还在。理论上它从 HTML 里就在这儿，但保险起见检查一下
-    var box = document.getElementById('turnstile');
-    if (!box) {
-      // 真的丢了才重建
-      var wrap = document.createElement('div');
-      wrap.className = 'ts-wrap';
-      var lab = document.createElement('div');
-      lab.className = 'field-label';
-      lab.textContent = '完成人机验证';
-      box = document.createElement('div');
-      box.id = 'turnstile';
-      box.className = 'ts';
-      wrap.appendChild(lab);
-      wrap.appendChild(box);
-      guestBits.appendChild(wrap);
-    }
-
-    // 容器没挂到文档上就先等一下 —— Turnstile 要求容器已就位
-    if (!box.isConnected) {
-      setTimeout(mountTurnstile, 60);
-      return;
-    }
-
-    setTsStatus('');
-
-    try {
-      turnstileWidget = window.turnstile.render(box, {
-        sitekey: guestCfg.turnstileSiteKey,
-        theme: 'dark',
-        callback: function () {
-          setTsStatus('');
+    fetch('/api/guest/challenge')
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        captcha.loading = false;
+        if (!j || !j.ok) {
+          if (captchaQ()) captchaQ().textContent = '出题失败';
+          setCaptchaMsg('（暂时不能提交，先用 GitHub 登录投稿也可以）');
           updateCounter();
-        },
-        'expired-callback': function () {
-          setTsStatus('验证已过期，请重新验证。');
-          updateCounter();
-        },
-        // 用户放着不管、挑战超时时的提示（官方建议加）
-        'timeout-callback': function () {
-          setTsStatus('验证超时了，点一下上面的方块完成验证。');
-        },
-        'error-callback': function (code) {
-          // Cloudflare 的错误码：前三位是错误类别（官方文档里是这个结构）
-          //   1xx = 通用问题，交给 Turnstile 自己重试
-          //   2xx = 客户端环境问题（常见于无头/自动化浏览器、被拦截的浏览器）
-          //   3xx / 6xx = 网络或挑战失败
-          //   110 = 配置错误，最常见是 site key 没登记当前域名
-          var c = Number(code) || 0;
-          var family = Math.floor(c / 100);
-          var msg;
-          if (family === 110) {
-            msg = '人机验证配置有问题，请联系站长（错误码 ' + c + '）。';
-          } else if (family === 2) {
-            msg = '当前浏览器过不了人机验证，换个浏览器或关掉拦截插件试试（错误码 ' + c + '）。';
-          } else if (family === 3 || family === 6) {
-            msg = '网络不太稳，人机验证没通过，刷新重试（错误码 ' + c + '）。';
-          } else {
-            msg = '人机验证出错，刷新重试（错误码 ' + c + '）。';
-          }
-          setTsStatus(msg);
-          updateCounter();
-          return false;   // false = 让 Turnstile 继续自己重试
+          return;
         }
+        captcha.challenge = j.challenge;
+        captcha.answer = '';
+        if (captchaQ()) captchaQ().textContent = j.question;
+        if (captchaInput()) { captchaInput().value = ''; captchaInput().focus(); }
+        updateCounter();
+      })
+      .catch(function (e) {
+        captcha.loading = false;
+        if (captchaQ()) captchaQ().textContent = '出题失败';
+        setCaptchaMsg('网络不太稳，刷新重试');
+        updateCounter();
       });
-      // render 没抛错但也没返回 widget → 当失败处理
-      if (turnstileWidget === undefined || turnstileWidget === null) {
-        turnstileWidget = null;
-        setTsStatus('人机验证初始化失败（组件没返回结果）。请刷新重试。');
-      }
-    } catch (e) {
-      turnstileWidget = null;
-      setTsStatus('人机验证初始化失败：' + e.message);
-      // 可能是脚本还没就绪，再等一轮
-      setTimeout(waitForTurnstile, 300);
-    }
   }
 
-  function getTurnstileToken() {
-    if (state.mode !== 'guest') return 'N/A';     // GitHub 模式不用验证码
-    if (!turnstileWidget) return null;
-    try { return window.turnstile.getResponse(turnstileWidget); }
-    catch (e) { return null; }
+  function setCaptchaMsg(text) {
+    var el = captchaMsg();
+    if (el) el.textContent = text || '';
   }
 
-  function resetTurnstile() {
-    if (turnstileWidget) { try { window.turnstile.reset(turnstileWidget); } catch (e) {} }
-    updateCounter();
+  // 答对了没有（只判断本地填了没有；对不对由服务端判）
+  function captchaFilled() {
+    return Boolean(captcha.challenge) &&
+           captchaInput() && String(captchaInput().value).trim() !== '';
   }
+
+  function resetCaptcha() {
+    newCaptcha();
+  }
+
+  if (captchaInput()) {
+    captchaInput().addEventListener('input', updateCounter);
+    captchaInput().addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); submitBtn.click(); }
+    });
+  }
+  var swapBtn = $('captchaSwap');
+  if (swapBtn) swapBtn.addEventListener('click', function () { resetCaptcha(); });
+
 
   /* ============================================================
      查投稿状态
@@ -737,9 +630,9 @@
     var canSubmit = !needAuth && Boolean(state.college) &&
                     ready > 0 && working === 0 && !state.submitting;
 
-    // 游客模式还要过了验证码才能提交
+    // 游客模式还要答对算术题才能提交
     if (canSubmit && state.mode === 'guest') {
-      canSubmit = Boolean(getTurnstileToken());
+      canSubmit = captchaFilled();
     }
 
     submitBtn.disabled = !canSubmit;
@@ -854,9 +747,9 @@
         renderFiles();
         extraNote.value = '';
 
-        // GitHub 模式下刷「我投过的稿」；游客模式重置验证码
+        // GitHub 模式下刷「我投过的稿」；游客模式换一道新题（一道题只能用一次）
         if (state.mode === 'gh') loadMine();
-        else resetTurnstile();
+        else resetCaptcha();
       })
       .catch(function (e) {
         done();
@@ -866,7 +759,7 @@
           (state.mode === 'guest' ? '' :
            '<p style="color:var(--muted);font-size:13px;margin-top:8px">' +
            '已经上传的部分会留在你的仓库分支里，可以重试（会新建一个分支）。</p>');
-        if (state.mode === 'guest') resetTurnstile();
+        if (state.mode === 'guest') resetCaptcha();
       })
       .then(function () {
         state.submitting = false;
@@ -880,19 +773,26 @@
     var fd = new FormData();
     fd.append('college', job.dir);
     if (job.note) fd.append('note', job.note);
-    // 文件名要单独带一份：FormData 里的 File 用的是处理前的临时名
-    job.items.forEach(function (it, i) {
+    job.items.forEach(function (it) {
       fd.append('files', new File([it.blob], it.name, { type: it.info.mime }));
     });
-    var ts = getTurnstileToken();
-    if (!ts) return Promise.reject(new Error('请先完成人机验证'));
-    fd.append('tsToken', ts);
+
+    // 带上算术题的答案和签名串，服务端会重算一遍对答案
+    if (!captcha.challenge) return Promise.reject(new Error('验证还没准备好，刷新页面重试'));
+    fd.append('captchaChallenge', captcha.challenge);
+    fd.append('captchaAnswer', captchaInput() ? captchaInput().value : '');
 
     onStep('上传到审核队列…');
     return fetch('/api/guest/submit', { method: 'POST', body: fd })
       .then(function (r) { return r.json().then(function (j) { return { r: r, j: j }; }); })
       .then(function (x) {
-        if (!x.r.ok || !x.j.ok) throw new Error(x.j.error || ('HTTP ' + x.r.status));
+        if (!x.r.ok || !x.j.ok) {
+          // 答错了 / 过期了 → 换一道新题，让用户重试
+          if (x.j.needNewChallenge || /算术题|验证|超时/.test(x.j.error || '')) {
+            resetCaptcha();
+          }
+          throw new Error(x.j.error || ('HTTP ' + x.r.status));
+        }
         return x.j;   // { ok, id }
       });
   }
@@ -905,10 +805,10 @@
      启动
      ============================================================ */
 
-  // 游客模式的配置（Turnstile site key + 有没有配好）
+  // 游客模式的配置（有没有配好）
   //
-  // 关键：把 Promise 存下来。因为 applyMode('guest') 在下面同步执行，
-  // 那时配置还没到；loadTurnstile 要靠这个 Promise 等配置到位后再挂载验证码。
+  // 关键：把 Promise 存下来。applyMode('guest') 在下面同步执行，
+  // 那时配置还没到；loadCaptcha 要靠这个 Promise 等配置到位后再出题。
   guestCfgPromise = fetch('/api/guest/config')
     .then(function (r) { return r.json(); })
     .then(function (c) {
@@ -923,7 +823,7 @@
       return c;
     })
     .catch(function () {
-      guestCfg = { turnstileSiteKey: '', ready: false };
+      guestCfg = { captcha: 'math', ready: false };
       // 本地用 file:// 打开会走到这里，不影响看界面
       return guestCfg;
     });

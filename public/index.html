@@ -141,17 +141,17 @@ var _hmt = _hmt || [];
       <button class="btn ghost" id="logoutBtn" type="button">退出登录</button>
     </div>
 
-    <!-- 游客模式才会显示：验证码 -->
-    <div id="guestBits" hidden>
-      <div class="ts-wrap">
-        <div class="field-label">完成人机验证</div>
-        <!-- 容器从一开始就在 DOM 里，而且**永远不要被 innerHTML 覆盖**。
-             Turnstile 要求 render() 时容器已挂载；之前代码用
-             guestBits.innerHTML='加载中…' 把这里整个换掉了，
-             导致 render('#turnstile') 找不到容器、静默失败（不报错也不显示）。 -->
-        <div id="turnstile" class="ts"></div>
-        <p class="note" id="tsStatus" style="margin-top:10px"></p>
+    <!-- 游客模式才会显示：人机验证（算术题） -->
+    <div id="captchaBox" hidden>
+      <div class="field-label">人机验证</div>
+      <div class="captcha-row">
+        <span class="captcha-q" id="captchaQ">正在出题…</span>
+        <input type="text" id="captchaInput" inputmode="numeric" autocomplete="off"
+               maxlength="4" placeholder="?" aria-label="算术题答案">
+        <button type="button" class="captcha-swap" id="captchaSwap"
+                title="换一道题" aria-label="换一道题">↻</button>
       </div>
+      <p class="note" id="captchaMsg" style="margin-top:8px"></p>
     </div>
 
     <p class="note small" id="submitHint">

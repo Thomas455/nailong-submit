@@ -154,6 +154,31 @@ body::before {
 /* Turnstile 默认是亮色卡片，在深色底上给个暗色偏好 */
 .ts iframe { color-scheme: dark; }
 
+/* ---------- 人机验证（算术题） ---------- */
+#captchaBox { margin-top: 18px; }
+.captcha-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.captcha-q {
+  font-size: 17px; font-weight: 700; letter-spacing: .02em;
+  color: var(--ink); white-space: nowrap;
+  /* 固定最小宽度，出题时不会让输入框跳来跳去 */
+  min-width: 108px;
+}
+#captchaInput {
+  width: 86px; padding: 10px 12px; border-radius: 10px;
+  background: #0d1224; border: 1px solid var(--line); color: var(--fg);
+  font: inherit; font-size: 16px; text-align: center;
+}
+#captchaInput:focus { outline: none; border-color: var(--ink); }
+.captcha-swap {
+  width: 36px; height: 36px; flex: 0 0 auto; border-radius: 50%;
+  cursor: pointer; background: rgba(254, 206, 14, .12);
+  border: 1px solid var(--line); color: var(--ink);
+  font-size: 17px; line-height: 1; display: grid; place-items: center;
+  transition: background-color .2s, transform .3s;
+}
+.captcha-swap:hover { background: var(--track); transform: rotate(180deg); }
+#captchaMsg:not(:empty) { color: var(--warn); font-size: 12.5px; }
+
 /* ---------- 查状态 ---------- */
 .row { display: flex; gap: 10px; align-items: stretch; }
 .row input {
