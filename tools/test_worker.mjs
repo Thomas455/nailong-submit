@@ -100,6 +100,31 @@ const sign = crypto.createHmac("sha256", "testsecret-do-not-use")
   .update(login + "." + ts).digest("hex");
 const cookie = `admin_session=${login}.${ts}.${sign}`;
 
+/* ===== 0. 投稿页的 GitHub 登录接口必须存在（回归测试）
+   曾经因为重构把它标成 410，导致投稿页点登录直接报错。===== */
+{
+  const G = makeEnv();
+  let gr = await call(G, "/api/login?nonce=abc123");
+  ok("/api/login 不再是 410", gr.status !== 410, "status=" + gr.status);
+  ok("  是 302 跳转", gr.status === 302, "status=" + gr.status);
+  ok("  跳向 GitHub 授权页", true);
+
+  // 直接读 Location 头，确认指向 github.com 且带了 public_repo
+  const raw = await worker.fetch(new Request(BASE + "/api/login?nonce=abc123"), G);
+  const loc = raw.headers.get("Location") || "";
+  ok("  Location 指向 GitHub", loc.includes("github.com/login/oauth/authorize"), loc.slice(0, 60));
+  ok("  要了 public_repo 权限", loc.includes("public_repo"));
+  ok("  带上了 state 参数", /[?&]state=/.test(loc));
+  const sc = raw.headers.get("Set-Cookie") || "";
+  ok("  设了 submit_state cookie", sc.includes("submit_state="), sc.slice(0, 40));
+
+  // /api/callback 缺参数时应该报 state 校验失败，而不是 410/500
+  const cb = await worker.fetch(new Request(BASE + "/api/callback?code=x&state=y"), G);
+  const cbTxt = await cb.text();
+  ok("/api/callback 不是 410/500", cb.status === 200, "status=" + cb.status);
+  ok("  提示 state 校验失败", cbTxt.includes("state"), cbTxt.slice(0, 120));
+}
+
 /* ===== 1. 配置接口不泄密 ===== */
 const E = makeEnv();
 let r = await call(E, "/api/guest/config");

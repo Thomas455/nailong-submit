@@ -61,17 +61,19 @@ export default {
       const admin = await adminRoutes(url, request, env);
       if (admin) return withHeaders(admin);
 
-      // 旧接口保留：原来投稿页（登录投稿）用的
+      // 投稿页（GitHub 登录投稿那条路）用这两个
       if (url.pathname === '/api/config') {
         return withHeaders(json({
           clientId: env.GITHUB_CLIENT_ID || '',
           ready: Boolean(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET)
         }));
       }
+      // /api/login 和 /api/callback 在 adminRoutes 里处理（上面就 return 了），
+      // 走到这里说明路由漏了 —— 明说比静默 404 好排查。
       if (url.pathname === '/api/login' || url.pathname === '/api/callback') {
         return withHeaders(new Response(
-          '这个接口已经不用了。请用 /api/admin/login。',
-          { status: 410, headers: { 'Content-Type': 'text/plain; charset=utf-8' } }
+          '这个接口的路由没接上（admin.js 里可能少了对应分支）。',
+          { status: 500, headers: { 'Content-Type': 'text/plain; charset=utf-8' } }
         ));
       }
 

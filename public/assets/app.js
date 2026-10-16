@@ -64,6 +64,9 @@
     step1.hidden = guest;
     stepStatus.hidden = !guest;
 
+    // 游客模式根本没登录这回事，「退出登录」按钮没有意义 —— 藏掉。
+    logoutBtn.hidden = guest;
+
     submitBtn.textContent = guest ? '提交到审核队列' : '提交投稿';
     if (guest) {
       submitHint.innerHTML = '提交后会进入审核队列，维护者看过后才会发布到展览馆。' +
@@ -88,23 +91,47 @@
      ============================================================ */
 
   var guestCfg = null;   // 服务端下发的 site key
+  var guestCfgPromise = null;   // 配置到达的信号，loadTurnstile 等它
+  var tsLoading = false; // 防止并发拉两次脚本
 
   function loadTurnstile() {
-    if (guestBits.hidden === false && turnstileWidget) return;
-    if (!guestCfg || !guestCfg.turnstileSiteKey) {
-      guestBits.innerHTML = '<p class="note">验证码还没配好，暂时只能用 GitHub 登录投稿。</p>';
+    if (turnstileWidget) return;
+
+    // ⚠️ 这里原来有个竞态：页面启动时 applyMode('guest') 先跑，
+    //    而 guestCfg 是异步 fetch 回来的，此刻还是 null。
+    //    旧代码直接 return 并且再也不重试 → 验证码永远不出现 →
+    //    getTurnstileToken() 永远 null → 提交按钮永远是灰的。
+    //    现在改成：没配置就等配置到位后再挂载。
+    if (!guestCfg) {
+      if (guestCfgPromise) guestCfgPromise.then(function () { loadTurnstile(); });
       return;
     }
-    if (!window.turnstile) {
-      // 按需加载：只有游客模式才拉这个脚本
-      var s = document.createElement('script');
-      s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
-      s.async = true;
-      s.onload = mountTurnstile;
-      document.head.appendChild(s);
-    } else {
-      mountTurnstile();
+    if (!guestCfg.turnstileSiteKey) {
+      guestBits.hidden = false;
+      guestBits.innerHTML = '<p class="note">人机验证还没配好，暂时只能用 GitHub 登录投稿。</p>';
+      updateCounter();
+      return;
     }
+
+    if (window.turnstile) { mountTurnstile(); return; }
+    if (tsLoading) return;
+    tsLoading = true;
+
+    guestBits.hidden = false;
+    guestBits.innerHTML = '<p class="note">正在加载人机验证…</p>';
+
+    // 按需加载：只有游客模式才拉这个脚本
+    var s = document.createElement('script');
+    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    s.async = true;
+    s.onload = function () { tsLoading = false; mountTurnstile(); };
+    s.onerror = function () {
+      tsLoading = false;
+      guestBits.innerHTML = '<p class="note">人机验证加载失败，检查一下网络或换个浏览器。' +
+        '也可以先用 GitHub 登录投稿。</p>';
+      updateCounter();
+    };
+    document.head.appendChild(s);
   }
 
   function mountTurnstile() {
@@ -752,16 +779,27 @@
      ============================================================ */
 
   // 游客模式的配置（Turnstile site key + 有没有配好）
-  fetch('/api/guest/config').then(function (r) { return r.json(); }).then(function (c) {
-    guestCfg = c;
-    if (!c.ready) {
-      modeGuest.setAttribute('aria-pressed', 'false');
-      modeGuest.disabled = true;
-      modeGuest.querySelector('span').textContent = '暂不可用';
-    }
-  }).catch(function () {
-    // 本地用 file:// 打开会走到这里，不影响看界面
-  });
+  //
+  // 关键：把 Promise 存下来。因为 applyMode('guest') 在下面同步执行，
+  // 那时配置还没到；loadTurnstile 要靠这个 Promise 等配置到位后再挂载验证码。
+  guestCfgPromise = fetch('/api/guest/config')
+    .then(function (r) { return r.json(); })
+    .then(function (c) {
+      guestCfg = c;
+      if (!c.ready) {
+        modeGuest.disabled = true;
+        modeGuest.querySelector('span').textContent = '暂不可用';
+        modeGh.setAttribute('aria-pressed', 'true');
+        modeGuest.setAttribute('aria-pressed', 'false');
+        applyMode('gh');          // 游客路没配好，退回 GitHub 登录
+      }
+      return c;
+    })
+    .catch(function () {
+      guestCfg = { turnstileSiteKey: '', ready: false };
+      // 本地用 file:// 打开会走到这里，不影响看界面
+      return guestCfg;
+    });
 
   // GitHub 登录那条路配好了没
   fetch('/api/config').then(function (r) { return r.json(); }).then(function (c) {

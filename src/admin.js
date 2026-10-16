@@ -35,6 +35,13 @@ export async function adminRoutes(url, request, env) {
   if (url.pathname === '/api/admin/login') return handleLogin(url, env);
   if (url.pathname === '/api/admin/callback') return handleCallback(request, url, env);
   if (url.pathname === '/api/admin/session') return handleSession(request, env);
+
+  // 投稿页那条「用 GitHub 登录」的路。同一个 OAuth App，但 scope 不同，
+  // 而且要把 token 交回前端（得用它 fork + 提 PR）。
+  // 故意和 /api/admin/* 分开：管理员那条只要 read:user，不碰仓库。
+  if (url.pathname === '/api/login') return handleSubmitLogin(url, env);
+  if (url.pathname === '/api/callback') return handleSubmitCallback(request, url, env);
+
   return null;
 }
 
@@ -65,6 +72,147 @@ function handleLogin(url, env) {
       'Set-Cookie': `admin_state=${csrf}|${nonce}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`
     }
   });
+}
+
+/* ============================================================
+   投稿页的 GitHub 登录（和上面的管理员登录是两回事）
+
+   管理员那条：只要 read:user，验完白名单发个会话 cookie，token 不外传。
+   这一条：要 public_repo（fork + 推内容 + 提 PR 是最低要求），
+            并且 token 必须交回前端 —— 因为提 PR 是在浏览器里做的。
+
+   用同一个 OAuth App：GitHub 的一个 App 只能配一个回调地址，
+   所以两条路共用 /api/callback 的思路，但 state cookie 和 scope 分开。
+   ============================================================ */
+function handleSubmitLogin(url, env) {
+  if (!env.GITHUB_CLIENT_ID) {
+    return html(errorPage('服务端还没配好',
+      '缺少 <code>GITHUB_CLIENT_ID</code> 环境变量。'), 500);
+  }
+
+  const csrf = randomState();
+  const nonce = String(url.searchParams.get('nonce') || '').slice(0, 40);
+
+  const auth = new URL(AUTHORIZE);
+  auth.searchParams.set('client_id', env.GITHUB_CLIENT_ID);
+  auth.searchParams.set('redirect_uri', url.origin + '/api/callback');
+  auth.searchParams.set('scope', 'public_repo');   // fork + 提 PR 的最低要求
+  auth.searchParams.set('state', csrf);
+  auth.searchParams.set('allow_signup', 'true');
+
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: auth.toString(),
+      'Set-Cookie': `submit_state=${csrf}|${nonce}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`
+    }
+  });
+}
+
+async function handleSubmitCallback(request, url, env) {
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  const oauthError = url.searchParams.get('error');
+  const clearState = 'submit_state=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0';
+
+  if (oauthError) {
+    return html(oidcPage({ error: url.searchParams.get('error_description') || oauthError }),
+                200, clearState);
+  }
+  if (!code) {
+    return html(oidcPage({ error: 'GitHub 没返回授权码' }), 200, clearState);
+  }
+
+  const saved = readCookie(request, 'submit_state') || '';
+  const [savedCsrf, savedNonce] = saved.split('|');
+  if (!savedCsrf || savedCsrf !== state) {
+    return html(oidcPage({ error: 'state 校验失败，请回投稿页重新登录。' }), 200, clearState);
+  }
+
+  let data;
+  try {
+    const r = await fetch(TOKEN_URL, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: env.GITHUB_CLIENT_ID,
+        client_secret: env.GITHUB_CLIENT_SECRET,
+        code,
+        redirect_uri: url.origin + '/api/callback'
+      })
+    });
+    data = await r.json();
+  } catch (e) {
+    return html(oidcPage({ error: '向 GitHub 换取 token 时网络出错：' + e.message }),
+                200, clearState);
+  }
+
+  if (!data || !data.access_token) {
+    return html(oidcPage({ error: (data && data.error_description) || 'GitHub 没有返回 token' }),
+                200, clearState);
+  }
+
+  // 把 token 交回投稿页（只在这一步出现，走 postMessage 不进 URL/日志）
+  return html(oidcPage({ token: data.access_token, scope: data.scope, nonce: savedNonce || '' }),
+              200, clearState);
+}
+
+// 投稿页的回调页：用 BroadcastChannel + opener 双通道回传 token
+function oidcPage({ token, scope, nonce, error }) {
+  const payload = JSON.stringify({
+    type: 'nailong-oauth',
+    token: token || null,
+    scope: scope || null,
+    nonce: nonce || '',
+    error: error || null
+  });
+
+  return `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>${error ? '授权失败' : '授权成功'}</title>
+<meta name="robots" content="noindex">
+<style>
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#080b1a;color:#eef1ff;
+       font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;text-align:center;padding:20px}
+  .box{max-width:460px}
+  h1{font-size:20px;margin:0 0 12px}
+  p{color:#8b93b8;font-size:14px;line-height:1.8;margin:0}
+  .ok{color:#3ddc84}.bad{color:#ff6b60}
+  button{margin-top:18px;padding:10px 22px;border-radius:999px;border:0;cursor:pointer;
+         background:#fece0e;color:#2a2000;font:inherit;font-weight:700}
+</style></head><body>
+<div class="box">
+  <h1 class="${error ? 'bad' : 'ok'}">${error ? '授权没成功' : '授权成功'}</h1>
+  <p id="tip">${error ? escapeHtml(error) : '这个窗口会自动关掉，回去继续投稿。'}</p>
+  <button id="closeBtn" type="button" hidden>关掉这个窗口</button>
+</div>
+<script>
+(function () {
+  var msg = ${payload};
+  try {
+    if (window.BroadcastChannel) {
+      var ch = new BroadcastChannel('nailong-oauth');
+      ch.postMessage(msg);
+      setTimeout(function () { try { ch.close(); } catch (e) {} }, 500);
+    }
+  } catch (e) {}
+  try {
+    if (window.opener && !window.opener.closed) window.opener.postMessage(msg, location.origin);
+  } catch (e) {}
+  ${error ? '' : `
+  setTimeout(function () {
+    try { window.close(); } catch (e) {}
+    setTimeout(function () {
+      var b = document.getElementById('closeBtn');
+      if (b && !document.hidden) {
+        b.hidden = false;
+        document.getElementById('tip').textContent = '回到投稿页继续就行，这个窗口可以关掉了。';
+      }
+    }, 700);
+  }, 300);
+  `}
+})();
+</script>
+</body></html>`;
 }
 
 /* ============================================================
@@ -122,7 +270,15 @@ async function handleCallback(request, url, env) {
   // ★ 立刻查身份并验白名单
   const login = await fetchLogin(data.access_token);
   if (!login) {
-    return html(callbackPage({ error: '无法读取你的 GitHub 用户名，请重试' }), 200, clearState);
+    // 把真实原因记进 Worker 日志（Cloudflare Dashboard → 实时日志 能看到），
+    // 页面上只给笼统提示。到底是 401 还是网络问题，日志里能看出来。
+    console.error('admin login: fetchLogin 失败',
+      'token 前缀=', String(data.access_token).slice(0, 7),
+      'scope=', data.scope);
+    return html(callbackPage({
+      error: '无法读取你的 GitHub 用户名，可能是网络问题或授权被撤回。请重试；' +
+             '若一直失败请看 Worker 日志。'
+    }), 200, clearState);
   }
   if (!isAdmin(login, env)) {
     // 注意：这里**不发**会话 cookie。没通过就是没通过。
@@ -143,13 +299,19 @@ async function fetchLogin(token) {
     const r = await fetch('https://api.github.com/user', {
       headers: {
         Authorization: 'Bearer ' + token,
-        Accept: 'application/vnd.github+json'
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'nailong-submit-worker'
       }
     });
-    if (!r.ok) return null;
+    if (!r.ok) {
+      console.error('fetchLogin: GitHub 返回', r.status,
+        await r.text().then(t => t.slice(0, 200)).catch(() => ''));
+      return null;
+    }
     const u = await r.json();
     return u.login || null;
   } catch (e) {
+    console.error('fetchLogin: 请求异常', e && e.message);
     return null;
   }
 }
